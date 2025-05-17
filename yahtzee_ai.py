@@ -415,7 +415,16 @@ class YahtzeeAI:
             
             # Upper section bonus consideration
             if category in self.UPPER_SECTION:
-                value = int(category.split('_')[1])  # Extract the number value
+                # Map category names to their values
+                value_map = {
+                    ONES: 1,
+                    TWOS: 2,
+                    THREES: 3,
+                    FOURS: 4,
+                    FIVES: 5,
+                    SIXES: 6
+                }
+                value = value_map[category]
                 needed_avg = game_state['avg_needed_per_remaining']
                 
                 if base_score >= needed_avg:  # Good score for upper section
