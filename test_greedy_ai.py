@@ -6,6 +6,7 @@ from game_logic import (
     THREE_OF_A_KIND, FOUR_OF_A_KIND, FULL_HOUSE,
     SMALL_STRAIGHT, LARGE_STRAIGHT, YAHTZEE, CHANCE
 )
+import random
 
 class TestGreedyAI(unittest.TestCase):
     def setUp(self):
@@ -13,15 +14,17 @@ class TestGreedyAI(unittest.TestCase):
         self.dice = Dice()
         self.scoresheet = ScoreSheet()
         
-        # Initialize all three greedy AIs
+        # Initialize all AIs
         self.greedy1 = YahtzeeAI("greedy1")
         self.greedy2 = YahtzeeAI("greedy2")
         self.greedy3 = YahtzeeAI("greedy3")
+        self.random_ai = YahtzeeAI("random")
         
         # Set game state for all AIs
         self.greedy1.set_game_state(self.scoresheet, self.dice)
         self.greedy2.set_game_state(self.scoresheet, self.dice)
         self.greedy3.set_game_state(self.scoresheet, self.dice)
+        self.random_ai.set_game_state(self.scoresheet, self.dice)
 
     def test_greedy1_never_rerolls(self):
         """Test that greedy1 AI never rerolls dice."""
@@ -121,6 +124,72 @@ class TestGreedyAI(unittest.TestCase):
         expected_score = self.greedy2._calculate_expected_score_for_reroll(keep_indices, dice_values)
         self.assertGreater(expected_score, 12,  # Should be better than just scoring the sixes
                           "Expected score for keeping pair of sixes should be > 12")
+
+    def test_random_ai_reroll_distribution(self):
+        """Test that random AI's reroll decisions follow expected distribution."""
+        dice_values = [1, 2, 3, 4, 5]
+        num_trials = 1000
+        reroll_counts = [0] * 5  # Count how often each die is rerolled
+        
+        # Set random seed for reproducibility
+        random.seed(42)
+        
+        # Run multiple trials
+        for _ in range(num_trials):
+            reroll = self.random_ai.decide_reroll(dice_values, 1)
+            for i in reroll:
+                reroll_counts[i] += 1
+        
+        # Check that each die is rerolled roughly 50% of the time
+        for i, count in enumerate(reroll_counts):
+            proportion = count / num_trials
+            self.assertGreater(proportion, 0.45,  # Allow some variance
+                             f"Die {i} was rerolled too infrequently: {proportion:.2f}")
+            self.assertLess(proportion, 0.55,  # Allow some variance
+                          f"Die {i} was rerolled too frequently: {proportion:.2f}")
+
+    def test_random_ai_respects_roll_limit(self):
+        """Test that random AI respects the roll limit."""
+        dice_values = [1, 2, 3, 4, 5]
+        
+        # First two rolls should potentially reroll some dice
+        reroll1 = self.random_ai.decide_reroll(dice_values, 1)
+        self.assertIsInstance(reroll1, list, "Reroll decision should be a list")
+        
+        reroll2 = self.random_ai.decide_reroll(dice_values, 2)
+        self.assertIsInstance(reroll2, list, "Reroll decision should be a list")
+        
+        # Third roll should return empty list
+        reroll3 = self.random_ai.decide_reroll(dice_values, 3)
+        self.assertEqual(reroll3, [], "Random AI should not reroll on third roll")
+
+    def test_random_ai_category_selection(self):
+        """Test that random AI chooses from available categories."""
+        dice_values = [1, 1, 1, 1, 1]  # Yahtzee of ones
+        
+        # Run multiple trials
+        num_trials = 100
+        chosen_categories = set()
+        
+        # Set random seed for reproducibility
+        random.seed(42)
+        
+        for _ in range(num_trials):
+            category = self.random_ai.choose_category(dice_values)
+            chosen_categories.add(category)
+            
+            # Reset scoresheet for next trial
+            self.random_ai.scoresheet = ScoreSheet()
+        
+        # Check that multiple different categories were chosen
+        self.assertGreater(len(chosen_categories), 1,
+                          "Random AI should choose different categories over multiple trials")
+        
+        # Verify all chosen categories were valid
+        available_categories = self.scoresheet.get_available_categories()
+        for category in chosen_categories:
+            self.assertIn(category, available_categories,
+                         f"Chosen category {category} was not in available categories")
 
 if __name__ == '__main__':
     unittest.main() 

@@ -9,6 +9,7 @@ from itertools import combinations_with_replacement
 import math
 import itertools
 import logging
+import random
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,7 +25,7 @@ class YahtzeeAI:
     
     def __init__(self, difficulty="medium"):
         """Initialize the AI agent with a difficulty level."""
-        self.difficulty = difficulty  # "easy", "medium", "hard", "greedy1", "greedy2", "greedy3"
+        self.difficulty = difficulty  # "easy", "medium", "hard", "greedy1", "greedy2", "greedy3", "random"
         self.scoresheet = None
         self.dice = None
     
@@ -48,6 +49,8 @@ class YahtzeeAI:
             return self._decide_reroll_greedy2(current_dice_values, roll_number)
         elif self.difficulty == "greedy3":
             return self._decide_reroll_greedy3(current_dice_values, roll_number)
+        elif self.difficulty == "random":
+            return self._decide_reroll_random(current_dice_values, roll_number)
         else:  # medium difficulty
             return self._decide_reroll_medium(current_dice_values, roll_number)
     
@@ -62,6 +65,8 @@ class YahtzeeAI:
             return self._choose_category_easy(dice_values)
         elif self.difficulty == "hard":
             return self._choose_category_hard(dice_values)
+        elif self.difficulty == "random":
+            return self._choose_category_random(dice_values)
         else:  # medium difficulty
             return self._choose_category_medium(dice_values)
     
@@ -394,32 +399,105 @@ class YahtzeeAI:
     def _calculate_expected_score_for_reroll(self, keep_indices, current_values):
         """Calculate expected score for a given set of dice to keep."""
         # Convert to list for easier manipulation
-        dice_list = list(current_values)
         reroll_count = 5 - len(keep_indices)
         
         if reroll_count == 0:
             logger.debug(f"No dice to reroll, returning current max score")
             return self._get_max_score(current_values)
         
-        # Generate all possible outcomes for rerolled dice
-        total_score = 0
-        total_outcomes = 0
-        
         # Keep track of which values we're keeping
         kept_values = [current_values[i] for i in keep_indices]
         logger.debug(f"Keeping dice values: {kept_values}")
         
-        # Generate all possible combinations for rerolled dice
-        for reroll_values in itertools.product(range(1, 7), repeat=reroll_count):
-            # Combine kept values with new roll
-            new_dice = kept_values + list(reroll_values)
-            score = self._get_max_score(new_dice)
-            total_score += score
-            total_outcomes += 1
+        # Early pruning: If keeping a good combination, don't reroll
+        kept_counter = Counter(kept_values)
+        all_counter = Counter(current_values)
         
-        expected_score = total_score / total_outcomes if total_outcomes > 0 else 0
-        logger.debug(f"Expected score for keeping {kept_values}: {expected_score:.2f}")
-        return expected_score
+        # Check for four of a kind
+        max_count = max(all_counter.values(), default=0)
+        if max_count >= 4:
+            # Find the value that appears 4 or more times
+            four_value = [val for val, count in all_counter.items() if count >= 4][0]
+            # Keep only the four of a kind dice
+            four_indices = [i for i, val in enumerate(current_values) if val == four_value][:4]
+            if set(keep_indices) != set(four_indices):
+                return -1  # Signal that this is not an optimal keep
+        
+        # Check for full house
+        if len(all_counter) == 2 and 2 in all_counter.values() and 3 in all_counter.values():
+            # Should keep all dice for a full house
+            if len(keep_indices) != 5:
+                return -1
+        
+        # Check for large straight
+        sorted_vals = sorted(set(current_values))
+        if len(sorted_vals) >= 5 and sorted_vals[-1] - sorted_vals[0] == 4:
+            # Should keep all dice for a large straight
+            if len(keep_indices) != 5:
+                return -1
+        
+        # Check for small straight
+        if len(self._find_longest_sequence(sorted_vals)) >= 4:
+            # Should keep at least the straight dice
+            straight_indices = set()
+            for i, val in enumerate(current_values):
+                if val in sorted_vals[:4]:
+                    straight_indices.add(i)
+            if not straight_indices.issubset(set(keep_indices)):
+                return -1
+        
+        # Calculate expected score using probability-based approach
+        total_score = 0
+        
+        # For upper section categories
+        for value in range(1, 7):
+            prob = 1/6  # Probability of rolling this value
+            for count in range(reroll_count + 1):
+                # Probability of getting exactly 'count' of this value
+                count_prob = self._calculate_probability_of_value(count, 0, reroll_count)
+                # Add kept values of this number
+                total_count = count + kept_counter[value]
+                # Calculate score if using this as upper section
+                score = total_count * value
+                total_score += prob * count_prob * score
+        
+        # For lower section categories
+        # Three of a kind
+        if max(kept_counter.values(), default=0) >= 2:
+            prob_three = self._calculate_probability_of_value(1, 0, reroll_count)
+            total_score = max(total_score, prob_three * 3 * max(kept_counter.keys()))
+        
+        # Four of a kind
+        if max(kept_counter.values(), default=0) >= 3:
+            prob_four = self._calculate_probability_of_value(1, 0, reroll_count)
+            total_score = max(total_score, prob_four * 4 * max(kept_counter.keys()))
+        
+        # Full house
+        if len(kept_counter) == 2 and 2 in kept_counter.values() and 3 in kept_counter.values():
+            total_score = max(total_score, 25)
+        
+        # Small straight
+        kept_sequence = len(self._find_longest_sequence(sorted(kept_values)))
+        if kept_sequence >= 3:
+            prob_straight = self._calculate_straight_probability(kept_values, reroll_count, 4)
+            total_score = max(total_score, prob_straight * 30)
+        
+        # Large straight
+        if kept_sequence >= 4:
+            prob_straight = self._calculate_straight_probability(kept_values, reroll_count, 5)
+            total_score = max(total_score, prob_straight * 40)
+        
+        # Yahtzee
+        if max(kept_counter.values(), default=0) >= 4:
+            prob_yahtzee = self._calculate_probability_of_value(1, 0, reroll_count)
+            total_score = max(total_score, prob_yahtzee * 50)
+        
+        # Chance (always possible)
+        chance_score = sum(kept_values) + reroll_count * 3.5  # 3.5 is average die value
+        total_score = max(total_score, chance_score)
+        
+        logger.debug(f"Expected score for keeping {kept_values}: {total_score:.2f}")
+        return total_score
 
     def _get_max_score(self, dice_values):
         """Get the maximum possible score across all available categories."""
@@ -523,4 +601,39 @@ class YahtzeeAI:
         for dice_values, keep_indices, min_expected in test_cases:
             score = self._calculate_expected_score_for_reroll(keep_indices, dice_values)
             self.assertGreaterEqual(score, min_expected,
-                f"Expected value too low for {dice_values} keeping {keep_indices}") 
+                f"Expected value too low for {dice_values} keeping {keep_indices}")
+
+    def _decide_reroll_random(self, current_dice_values, roll_number):
+        """
+        Random strategy: Randomly decide which dice to reroll.
+        Each die has a 50% chance of being rerolled.
+        """
+        if roll_number >= 3:
+            logger.info("No more rerolls allowed")
+            return []
+            
+        # For each die, randomly decide whether to reroll it
+        reroll_indices = []
+        for i in range(len(current_dice_values)):
+            if random.random() < 0.5:  # 50% chance to reroll each die
+                reroll_indices.append(i)
+                
+        logger.info(f"\nRandom AI deciding reroll for {current_dice_values} (roll {roll_number})")
+        logger.info(f"Randomly chose to reroll indices: {reroll_indices}")
+        return reroll_indices
+
+    def _choose_category_random(self, dice_values):
+        """
+        Random strategy: Choose a random available category.
+        """
+        available_categories = self.scoresheet.get_available_categories()
+        if not available_categories:
+            return None
+            
+        chosen_category = random.choice(list(available_categories))
+        score = self.scoresheet.get_potential_score(chosen_category, dice_values)
+        
+        logger.info(f"\nRandom AI choosing category for dice values: {dice_values}")
+        logger.info(f"Randomly chose category {chosen_category} with score {score}")
+        
+        return chosen_category 
