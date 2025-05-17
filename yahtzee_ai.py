@@ -7,6 +7,12 @@ from game_logic import (
 from collections import Counter
 from itertools import combinations_with_replacement
 import math
+import itertools
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class YahtzeeAI:
     """AI agent for playing Yahtzee using heuristic strategies."""
@@ -18,7 +24,7 @@ class YahtzeeAI:
     
     def __init__(self, difficulty="medium"):
         """Initialize the AI agent with a difficulty level."""
-        self.difficulty = difficulty  # "easy", "medium", or "hard"
+        self.difficulty = difficulty  # "easy", "medium", "hard", "greedy1", "greedy2", "greedy3"
         self.scoresheet = None
         self.dice = None
     
@@ -36,6 +42,12 @@ class YahtzeeAI:
             return self._decide_reroll_easy(current_dice_values, roll_number)
         elif self.difficulty == "hard":
             return self._decide_reroll_hard(current_dice_values, roll_number)
+        elif self.difficulty == "greedy1":
+            return []  # Never reroll
+        elif self.difficulty == "greedy2":
+            return self._decide_reroll_greedy2(current_dice_values, roll_number)
+        elif self.difficulty == "greedy3":
+            return self._decide_reroll_greedy3(current_dice_values, roll_number)
         else:  # medium difficulty
             return self._decide_reroll_medium(current_dice_values, roll_number)
     
@@ -44,7 +56,9 @@ class YahtzeeAI:
         Choose the best category to score based on current dice values.
         Returns the chosen category name.
         """
-        if self.difficulty == "easy":
+        if self.difficulty in ["greedy1", "greedy2", "greedy3"]:
+            return self._choose_category_greedy(dice_values)
+        elif self.difficulty == "easy":
             return self._choose_category_easy(dice_values)
         elif self.difficulty == "hard":
             return self._choose_category_hard(dice_values)
@@ -375,4 +389,131 @@ class YahtzeeAI:
                 current_sequence = [sorted_vals[i]]
         
         sequences.append(current_sequence)
-        return max(sequences, key=len) 
+        return max(sequences, key=len)
+
+    def _calculate_expected_score_for_reroll(self, keep_indices, current_values):
+        """Calculate expected score for a given set of dice to keep."""
+        # Convert to list for easier manipulation
+        dice_list = list(current_values)
+        reroll_count = 5 - len(keep_indices)
+        
+        if reroll_count == 0:
+            logger.debug(f"No dice to reroll, returning current max score")
+            return self._get_max_score(current_values)
+        
+        # Generate all possible outcomes for rerolled dice
+        total_score = 0
+        total_outcomes = 0
+        
+        # Keep track of which values we're keeping
+        kept_values = [current_values[i] for i in keep_indices]
+        logger.debug(f"Keeping dice values: {kept_values}")
+        
+        # Generate all possible combinations for rerolled dice
+        for reroll_values in itertools.product(range(1, 7), repeat=reroll_count):
+            # Combine kept values with new roll
+            new_dice = kept_values + list(reroll_values)
+            score = self._get_max_score(new_dice)
+            total_score += score
+            total_outcomes += 1
+        
+        expected_score = total_score / total_outcomes if total_outcomes > 0 else 0
+        logger.debug(f"Expected score for keeping {kept_values}: {expected_score:.2f}")
+        return expected_score
+
+    def _get_max_score(self, dice_values):
+        """Get the maximum possible score across all available categories."""
+        available_categories = self.scoresheet.get_available_categories()
+        scores = {cat: self.scoresheet.get_potential_score(cat, dice_values) 
+                 for cat in available_categories}
+        best_category = max(scores.items(), key=lambda x: x[1])
+        logger.debug(f"Best score for {dice_values}: {best_category[1]} in category {best_category[0]}")
+        return best_category[1]
+
+    def _decide_reroll_greedy2(self, current_dice_values, roll_number):
+        """
+        Greedy level-2 strategy: Only one reroll allowed.
+        Choose reroll that maximizes expected score this round.
+        """
+        logger.info(f"\nGreedy2 AI deciding reroll for {current_dice_values} (roll {roll_number})")
+        
+        if roll_number >= 2:
+            logger.info("No more rerolls allowed for greedy2")
+            return []
+            
+        best_score = self._get_max_score(current_dice_values)
+        best_reroll = []
+        logger.info(f"Current best score (no reroll): {best_score}")
+        
+        # Try all possible combinations of dice to keep
+        for keep_count in range(6):
+            for keep_indices in itertools.combinations(range(5), keep_count):
+                expected_score = self._calculate_expected_score_for_reroll(keep_indices, current_dice_values)
+                logger.debug(f"Keeping indices {keep_indices}, expected score: {expected_score:.2f}")
+                if expected_score > best_score:
+                    best_score = expected_score
+                    best_reroll = [i for i in range(5) if i not in keep_indices]
+                    logger.info(f"New best reroll found: {best_reroll} with expected score {best_score:.2f}")
+        
+        logger.info(f"Final decision - reroll indices: {best_reroll}")
+        return best_reroll
+
+    def _decide_reroll_greedy3(self, current_dice_values, roll_number):
+        """
+        Greedy level-3 strategy: Up to two rerolls allowed.
+        Choose reroll that maximizes expected score this round.
+        """
+        logger.info(f"\nGreedy3 AI deciding reroll for {current_dice_values} (roll {roll_number})")
+        
+        if roll_number >= 3:
+            logger.info("No more rerolls allowed")
+            return []
+            
+        best_score = self._get_max_score(current_dice_values)
+        best_reroll = []
+        logger.info(f"Current best score (no reroll): {best_score}")
+        
+        # Similar to greedy2, but considers the possibility of a second reroll
+        for keep_count in range(6):
+            for keep_indices in itertools.combinations(range(5), keep_count):
+                expected_score = self._calculate_expected_score_for_reroll(keep_indices, current_dice_values)
+                logger.debug(f"Keeping indices {keep_indices}, expected score: {expected_score:.2f}")
+                if expected_score > best_score:
+                    best_score = expected_score
+                    best_reroll = [i for i in range(5) if i not in keep_indices]
+                    logger.info(f"New best reroll found: {best_reroll} with expected score {best_score:.2f}")
+        
+        logger.info(f"Final decision - reroll indices: {best_reroll}")
+        return best_reroll
+
+    def _choose_category_greedy(self, dice_values):
+        """
+        Greedy strategy: Simply choose the category that gives the highest score
+        for the current dice values.
+        """
+        logger.info(f"\nGreedy AI choosing category for dice values: {dice_values}")
+        available_categories = self.scoresheet.get_available_categories()
+        scores = {cat: self.scoresheet.get_potential_score(cat, dice_values) 
+                 for cat in available_categories}
+        
+        # Log all possible scores
+        for cat, score in scores.items():
+            logger.debug(f"Category {cat}: {score} points")
+        
+        best_category = max(scores.items(), key=lambda x: x[1])
+        logger.info(f"Chose category {best_category[0]} with score {best_category[1]}")
+        return best_category[0]
+
+    def test_greedy_expected_value_accuracy(self):
+        """Test accuracy of expected value calculations."""
+        test_cases = [
+            # Format: (current_dice, keep_indices, min_expected_score)
+            ([6, 6, 6, 1, 1], [0, 1, 2], 25),  # Three 6s
+            ([5, 5, 4, 4, 1], [0, 1, 2, 3], 25),  # Two pairs
+            ([1, 2, 3, 4, 6], [0, 1, 2, 3], 30),  # Potential straight
+        ]
+        
+        for dice_values, keep_indices, min_expected in test_cases:
+            score = self._calculate_expected_score_for_reroll(keep_indices, dice_values)
+            self.assertGreaterEqual(score, min_expected,
+                f"Expected value too low for {dice_values} keeping {keep_indices}") 
