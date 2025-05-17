@@ -37,9 +37,9 @@ def get_player_input(prompt, allowed_type=str, allowed_values=None, allow_empty=
         except ValueError:
             print(f"Invalid input. Expected {allowed_type.__name__}.")
 
-def play_turn(player_name, dice, scoresheet):
+def play_turn(name, dice, scoresheet, is_ai=False, ai_agent=None):
     """Manages a single turn for a player."""
-    print(f"\n--- {player_name}'s Turn ---")
+    print(f"\n--- {name}'s Turn ---")
     dice.reset_roll_count() # Resets roll count and unholds all dice
     proceed_to_score_flag = False
 
@@ -48,93 +48,56 @@ def play_turn(player_name, dice, scoresheet):
         if roll_num == 1:
             dice.roll_all()
         else: # Subsequent rolls
-            # roll_all() in Dice class only rolls unheld dice, which is what we want
-            dice.roll_all()
-
-        print(f"Dice: {dice}")
-        print(f"Values: {dice.get_values()}")
-
-        if roll_num < 3:
-            # Loop for getting hold input and deciding next action (roll again / score now)
-            while True: 
-                print("\nCurrent hold status:")
-                for i, die_obj in enumerate(dice.dice):
-                    print(f"  Die {i+1} ({die_obj.value}): {'Held' if die_obj.is_held else 'Not Held'}")
-
-                hold_input_list = get_player_input(
-                    "Enter dice numbers (1-5, comma-separated) to toggle hold status (e.g., 1,3,5), or press Enter to keep current holds: ", 
-                    allowed_type=list, # Expects list of ints or empty list
-                    allow_empty=True
-                )
-
-                indices_to_toggle = []
-                valid_numbers_for_toggle = True
-                if hold_input_list: # If list is not empty, player entered numbers to toggle
-                    for die_num_from_list in hold_input_list:
-                        if 1 <= die_num_from_list <= len(dice.dice):
-                            indices_to_toggle.append(die_num_from_list - 1) # 0-indexed
-                        else:
-                            print(f"Invalid die number: {die_num_from_list}. Must be between 1 and {len(dice.dice)}.")
-                            valid_numbers_for_toggle = False
-                            break 
-                    if not valid_numbers_for_toggle:
-                        continue # Re-ask for dice to hold/unhold
-
-                chosen_action_post_holds = '' # r or s
-
-                if indices_to_toggle: # Player specified dice to toggle, now confirm
-                    # --- Confirmation Sub-Loop --- 
-                    while True:
-                        print("\nPreview of proposed hold status:")
-                        current_holds_status = [d.is_held for d in dice.dice]
-                        proposed_holds_status = list(current_holds_status) # Create a mutable copy
-                        
-                        for index_to_toggle_preview in indices_to_toggle:
-                            # Toggle the state in the preview
-                            proposed_holds_status[index_to_toggle_preview] = not proposed_holds_status[index_to_toggle_preview]
-
-                        for i in range(len(dice.dice)):
-                            proposed_status_text = "Held" if proposed_holds_status[i] else "Not Held"
-                            print(f"  Die {i+1} ({dice.dice[i].value}): {proposed_status_text}")
-                        
-                        confirm_choice = get_player_input("Confirm this hold selection? (y/n): ", allowed_values=['y', 'n'])
-                        if confirm_choice == 'y':
-                            for index_to_apply_toggle in indices_to_toggle: # Apply confirmed changes
-                                dice.toggle_hold(index_to_apply_toggle)
-                            
-                            print("\nUpdated hold status:")
-                            for i, die_obj in enumerate(dice.dice):
-                                print(f"  Die {i+1} ({die_obj.value}): {'Held' if die_obj.is_held else 'Not Held'}")
-                            
-                            chosen_action_post_holds = get_player_input("Roll again (r) or score this turn (s)? ", allowed_values=['r', 's'])
-                            break # Break from confirmation sub-loop
-                        else: # confirm_choice == 'n'
-                            print("Hold selection cancelled. Please re-enter dice to hold/unhold.")
-                            chosen_action_post_holds = None # Signal to re-prompt for holds
-                            break # Break from confirmation sub-loop
-                    # --- End Confirmation Sub-Loop ---
-
-                    if chosen_action_post_holds is None: # Means confirmation was 'n', re-prompt for hold_input_list
-                        continue 
-                    # If 'y' was confirmed, chosen_action_post_holds is 'r' or 's'
-                
-                else: # No dice specified to toggle (hold_input_list was empty)
-                    print("Keeping current hold status.")
-                    chosen_action_post_holds = get_player_input("Roll unheld dice (r) or score this turn (s)? ", allowed_values=['r', 's'])
-
-                # At this point, chosen_action_post_holds is 'r' or 's'
-                if chosen_action_post_holds == 'r':
-                    break # Break from the input `while True` loop, proceed to next roll in `for roll_num`
-                elif chosen_action_post_holds == 's':
+            if is_ai:
+                # Get AI's reroll decision
+                indices_to_reroll = ai_agent.decide_reroll(dice.get_values(), roll_num)
+                if indices_to_reroll:
+                    dice.roll_specific(indices_to_reroll)
+                else:
                     proceed_to_score_flag = True
-                    break # Break from the input `while True` loop
-            
-            if proceed_to_score_flag:
-                print("Proceeding to scoring phase early.")
-                break # Break from the `for roll_num` loop (main rolling loop)
-        else: # This is for roll_num == 3 (final roll of the turn)
-            print("Final roll for this turn. Proceeding to scoring.")
-            # Loop will naturally end, and execution will fall through to the scoring phase
+                    break
+            else:
+                # Human player's turn
+                print("\nCurrent dice:", dice)
+                print(f"Values: {dice.get_values()}")
+                if input("Would you like to roll again? (y/n): ").lower() != 'y':
+                    break
+                
+                # Get which dice to reroll
+                while True: 
+                    print("\nCurrent hold status:")
+                    for i, die_obj in enumerate(dice.dice):
+                        print(f"  Die {i+1} ({die_obj.value}): {'Held' if die_obj.is_held else 'Not Held'}")
+
+                    hold_input_list = get_player_input(
+                        "Enter dice numbers (1-5, comma-separated) to toggle hold status (e.g., 1,3,5), or press Enter to keep current holds: ", 
+                        allowed_type=list,
+                        allow_empty=True
+                    )
+
+                    indices_to_toggle = []
+                    valid_numbers_for_toggle = True
+                    if hold_input_list:
+                        for die_num in hold_input_list:
+                            if 1 <= die_num <= len(dice.dice):
+                                indices_to_toggle.append(die_num - 1)
+                            else:
+                                print(f"Invalid die number: {die_num}. Must be between 1 and {len(dice.dice)}.")
+                                valid_numbers_for_toggle = False
+                                break
+                        if not valid_numbers_for_toggle:
+                            continue
+
+                        # Apply hold toggles
+                        for index in indices_to_toggle:
+                            dice.toggle_hold(index)
+                    
+                    # Roll the dice
+                    dice.roll_all()
+                    break
+
+        print(f"\nDice after roll {roll_num}: {dice}")
+        print(f"Values: {dice.get_values()}")
 
     # Scoring phase
     print("\n--- Choose a Category to Score ---")
@@ -144,36 +107,42 @@ def play_turn(player_name, dice, scoresheet):
     available_categories = scoresheet.get_available_categories()
     if not available_categories:
         print("No categories left to score! This shouldn't happen in a standard game.")
-        return # Should ideally not happen if game loop runs for num_turns
-
-    print("Available Categories and Potential Scores:")
-    potential_scores_display_map = {}
-    for i, category_name_iter in enumerate(available_categories):
-        score = scoresheet.get_potential_score(category_name_iter, current_dice_values)
-        display_text = f"  {i+1}. {category_name_iter:<20}: {score}"
-        potential_scores_display_map[str(i+1)] = category_name_iter
-        print(display_text)
-
-    # Ensure there are categories to choose from before prompting
-    if not potential_scores_display_map:
-        print("Error: No available categories to display for scoring.")
-        # This might indicate an issue if available_categories was populated but map isn't
         return
 
-    chosen_category_num_str = get_player_input(
-        "Select a category number to score: ", 
-        allowed_type=str, # Input will be a string number like "1", "2"
-        allowed_values=list(potential_scores_display_map.keys())
-    )
-    chosen_category_name = potential_scores_display_map[chosen_category_num_str]
+    if is_ai:
+        # AI chooses category
+        chosen_category = ai_agent.choose_category(current_dice_values)
+        score = scoresheet.get_potential_score(chosen_category, current_dice_values)
+        print(f"\nAI chooses to score {score} points in {chosen_category}")
+    else:
+        # Human chooses category
+        print("Available Categories and Potential Scores:")
+        potential_scores_display_map = {}
+        for i, category_name in enumerate(available_categories):
+            score = scoresheet.get_potential_score(category_name, current_dice_values)
+            display_text = f"  {i+1}. {category_name:<20}: {score}"
+            potential_scores_display_map[str(i+1)] = category_name
+            print(display_text)
+
+        chosen_category_num = get_player_input(
+            "Select a category number to score: ", 
+            allowed_type=str,
+            allowed_values=list(potential_scores_display_map.keys())
+        )
+        chosen_category = potential_scores_display_map[chosen_category_num]
     
-    scoresheet.record_score(chosen_category_name, current_dice_values)
+    scoresheet.record_score(chosen_category, current_dice_values)
     scoresheet.display_scoresheet()
 
 def main():
     """Main game loop."""
     print("Welcome to Yahtzee!")
     print("==================")
+    print("\nYou can play against AI players with different difficulty levels:")
+    print("- Type 'ai:easy' for an easy AI opponent")
+    print("- Type 'ai:medium' for a medium AI opponent")
+    print("- Type 'ai:hard' for a hard AI opponent")
+    print("- Press Enter or type a name for a human player")
     
     # Create game manager and set up players
     game = GameManager()
@@ -181,17 +150,21 @@ def main():
     
     # Main game loop
     while True:
-        name, scoresheet = game.get_current_player()
+        name, scoresheet, ai_agent = game.get_current_player()
+        is_ai = ai_agent is not None
+        
         print(f"\n=== {name}'s Turn ===")
+        if is_ai:
+            print("(AI Player)")
         
         # Display scoresheet
         scoresheet.display_scoresheet()
         
         # Handle player's turn
-        play_turn(name, game.dice, scoresheet)
+        play_turn(name, game.dice, scoresheet, is_ai, ai_agent)
         
-        # Check if current player wants to quit
-        if not scoresheet.is_complete():
+        # Check if current player wants to quit (only for human players)
+        if not is_ai and not scoresheet.is_complete():
             if get_player_input("Would you like to quit? (y/n): ", str, ['y', 'n']) == 'y':
                 if not game.remove_player(name):
                     print("\nGame Over - All players have quit!")
@@ -202,7 +175,7 @@ def main():
         game.next_turn()
         
         # Check if game is complete
-        if all(sheet.is_complete() for _, sheet in game.players):
+        if all(sheet.is_complete() for _, sheet, _ in game.players):
             print("\nGame Over!")
             game.display_rankings()
             break

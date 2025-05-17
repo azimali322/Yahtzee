@@ -1,5 +1,6 @@
 import random
 from game_logic import ScoreSheet, Dice
+from yahtzee_ai import YahtzeeAI
 
 # List of 100 random English names
 RANDOM_NAMES = [
@@ -38,8 +39,9 @@ class GameManager:
         self.num_players = max(1, min(10, num_players))  # Limit to 1-10 players
         self.dice = Dice()
         self.current_player_idx = 0
-        self.players = []  # List of (name, scoresheet) tuples
-        self.quit_players = []  # List of (name, scoresheet) tuples for players who quit
+        self.players = []  # List of (name, scoresheet, ai_agent) tuples, ai_agent is None for human players
+        self.quit_players = []  # List of (name, scoresheet, ai_agent) tuples for players who quit
+        self.human_players_count = 0  # Track number of human players
     
     def setup_game(self):
         """Sets up a new game by getting the number of players and their names."""
@@ -52,12 +54,25 @@ class GameManager:
             except ValueError:
                 print("Please enter a valid number.")
         
-        print("\nEnter player names (press Enter for random name):")
+        print("\nEnter player names (press Enter for random name, 'ai:easy', 'ai:medium', or 'ai:hard' for AI players):")
         for i in range(num_players):
-            name = input(f"Player {i + 1}: ").strip()
-            assigned_name = self.add_player(name)
-            if not name:
-                print(f"Assigned random name: {assigned_name}")
+            name = input(f"Player {i + 1}: ").strip().lower()
+            
+            # Check for AI player
+            ai_agent = None
+            if name.startswith('ai:'):
+                difficulty = name.split(':')[1] if len(name.split(':')) > 1 else 'medium'
+                if difficulty not in ['easy', 'medium', 'hard']:
+                    difficulty = 'medium'
+                ai_agent = YahtzeeAI(difficulty)
+                name = None  # Will be assigned a random name
+            else:
+                self.human_players_count += 1
+            
+            # Get or assign name
+            assigned_name = self.add_player(name, ai_agent)
+            if not name or name.startswith('ai:'):
+                print(f"Assigned name: {assigned_name}")
             
         return self.players
     
@@ -68,11 +83,14 @@ class GameManager:
         return self.get_current_player()
     
     def get_current_player(self):
-        """Returns the current player's name and scoresheet."""
+        """Returns the current player's name, scoresheet, and AI agent (if any)."""
         return self.players[self.current_player_idx]
     
     def remove_player(self, player_name):
-        """Removes a player from the game and adds them to quit_players list."""
+        """
+        Removes a human player from the game and adds them to quit_players list.
+        Returns True if game should continue, False if game should end.
+        """
         # Find the player to remove
         player_to_remove = None
         for player in self.players:
@@ -81,15 +99,30 @@ class GameManager:
                 break
         
         if player_to_remove:
-            self.quit_players.append(player_to_remove)
-            self.players = [(name, sheet) for name, sheet in self.players if name != player_name]
-            if self.current_player_idx >= len(self.players):
-                self.current_player_idx = 0
-        return len(self.players) > 0  # Return True if there are still players in the game
-
-    def is_game_over(self):
-        """Checks if all players have completed their scoresheets or if no players remain."""
-        return len(self.players) == 0 or all(scoresheet.is_complete() for _, scoresheet in self.players)
+            # Only remove if it's a human player
+            if player_to_remove[2] is None:  # Check if not an AI player
+                self.quit_players.append(player_to_remove)
+                self.players = [(name, sheet, ai) for name, sheet, ai in self.players if name != player_name]
+                if self.current_player_idx >= len(self.players):
+                    self.current_player_idx = 0
+                self.human_players_count -= 1
+        
+        # Return True if there are still human players or if game should continue
+        return self.human_players_count > 0
+    
+    def has_human_players(self):
+        """Returns True if there are still human players in the game."""
+        return self.human_players_count > 0
+    
+    def is_game_over(self, allow_final_round=False):
+        """
+        Checks if the game should end:
+        - All human players have quit AND final round is complete (if allow_final_round is True), OR
+        - All remaining players (human and AI) have completed their scoresheets
+        """
+        if self.human_players_count == 0 and not allow_final_round:
+            return True
+        return all(scoresheet.is_complete() for _, scoresheet, _ in self.players)
     
     def get_rankings(self):
         """
@@ -97,7 +130,7 @@ class GameManager:
         Handles ties by giving tied players the same rank and skipping subsequent ranks.
         """
         # Create list of (name, score) tuples
-        scores = [(name, sheet.get_grand_total()) for name, sheet in self.players]
+        scores = [(name, sheet.get_grand_total()) for name, sheet, _ in self.players]
         
         # Sort by score in descending order
         scores.sort(key=lambda x: x[1], reverse=True)
@@ -165,13 +198,13 @@ class GameManager:
         print(f"{'Player':<20} {'Score':>10} {'Status':>10}")
         print("-" * 42)
         
-        for name, scoresheet in sorted_players:
-            status = "Active" if (name, scoresheet) in self.players else "Quit"
+        for name, scoresheet, ai_agent in sorted_players:
+            status = "Active" if (name, scoresheet, ai_agent) in self.players else "Quit"
             score = scoresheet.get_grand_total()
             print(f"{name:<20} {score:>10} {status:>10}")
         print("-" * 42)
 
-    def add_player(self, name=None):
+    def add_player(self, name=None, ai_agent=None):
         """Add a new player to the game. If no name provided, assign a random name."""
         if not name:
             name = get_random_name()
@@ -183,7 +216,29 @@ class GameManager:
             name = f"{original_name}_{counter}"
             counter += 1
         
-        player = (name, ScoreSheet())
+        scoresheet = ScoreSheet()
+        if ai_agent:
+            ai_agent.set_game_state(scoresheet, self.dice)
+        
+        player = (name, scoresheet, ai_agent)
         self.players.append(player)
         GameManager.active_players.append(player)
-        return name 
+        return name
+    
+    def is_current_player_ai(self):
+        """Returns True if the current player is an AI agent."""
+        return self.players[self.current_player_idx][2] is not None
+    
+    def get_ai_reroll_decision(self):
+        """Gets the AI's decision about which dice to reroll."""
+        _, _, ai_agent = self.players[self.current_player_idx]
+        if ai_agent:
+            return ai_agent.decide_reroll(self.dice.get_values(), self.dice.roll_count + 1)
+        return []
+    
+    def get_ai_category_choice(self):
+        """Gets the AI's decision about which category to score."""
+        _, _, ai_agent = self.players[self.current_player_idx]
+        if ai_agent:
+            return ai_agent.choose_category(self.dice.get_values())
+        return None 

@@ -51,13 +51,37 @@ def get_category_choice(scoresheet, available_categories):
 
 def play_turn(game_manager):
     """Handles a single player's turn."""
-    name, scoresheet = game_manager.get_current_player()
+    name, scoresheet, ai_agent = game_manager.get_current_player()
     dice = game_manager.dice
     
     print(f"\n=== {name}'s Turn ===")
     scoresheet.display_scoresheet()
     
-    # Allow up to 3 rolls
+    # Handle AI player's turn differently
+    if ai_agent:
+        print(f"\n{name} (AI) is thinking...")
+        dice.roll_all()
+        print("First roll:", dice)
+        
+        # AI makes up to two reroll decisions
+        for roll_num in range(2):
+            reroll_indices = ai_agent.decide_reroll(dice.get_values(), roll_num + 2)
+            if reroll_indices:
+                dice.roll_specific(reroll_indices)
+                print(f"Reroll {roll_num + 1}:", dice)
+            else:
+                break
+        
+        # AI chooses category
+        print("\nFinal dice:", dice)
+        category = ai_agent.choose_category(dice.get_values())
+        score = scoresheet.get_potential_score(category, dice.get_values())
+        scoresheet.record_score(category, dice.get_values())
+        print(f"\n{name} scored {score} points in {category}")
+        scoresheet.display_scoresheet()
+        return True  # AI players never quit
+    
+    # Human player's turn
     for roll_num in range(3):
         if roll_num == 0:
             dice.roll_all()
@@ -110,26 +134,50 @@ def main():
     game = GameManager()
     game.setup_game()
     
+    # Track if we're in final round after all humans quit
+    final_round = False
+    starting_player_idx = None
+    
     # Main game loop
-    while not game.is_game_over():
-        if not play_turn(game):
-            if len(game.players) == 0:
+    while not game.is_game_over(allow_final_round=final_round):
+        # Get current player index before the turn
+        current_idx = game.current_player_idx
+        
+        # Play the turn
+        turn_result = play_turn(game)
+        
+        # Check if a human player just quit
+        if not turn_result:
+            if not game.has_human_players():
+                print("\nAll human players have quit. Playing final round for all remaining players...")
+                final_round = True
+                starting_player_idx = current_idx
+                # Don't break here - continue to let AI players finish their turns
+            elif len(game.players) == 0:
                 print("\nAll players have quit.")
                 game.display_all_scores()
                 break
-        game.next_turn()
+        
+        # Move to next player
+        next_player = game.next_turn()
+        
+        # If we're in final round and about to start a new round, end the game
+        if final_round and starting_player_idx is not None:
+            # We've completed the round when the next player would be the starting player
+            if game.current_player_idx == starting_player_idx:
+                # Play the final turn for the last AI player
+                if game.is_current_player_ai():
+                    play_turn(game)
+                print("\nFinal round complete!")
+                break
     
     # Display final results
-    if len(game.players) > 0:
+    if len(game.players) > 0 or game.quit_players:
         print("\nGame Over!")
-        if len(game.players) == 1:
-            name, scoresheet = game.players[0]
-            print(f"\nFinal Score for {name}: {scoresheet.get_grand_total()}")
+        # Show final rankings including all players
+        game.display_all_scores()
+        print("\nFinal Rankings (including players who quit):")
         game.display_rankings()
-        # Also show scores for players who quit
-        if game.quit_players:
-            print("\nPlayers who quit earlier:")
-            game.display_all_scores()
 
 if __name__ == "__main__":
     main() 
