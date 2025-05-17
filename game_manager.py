@@ -12,10 +12,10 @@ class GameManager:
         """Sets up a new game by getting the number of players and their names."""
         while True:
             try:
-                num_players = int(input("Enter number of players (2-10): "))
-                if 2 <= num_players <= 10:
+                num_players = int(input("Enter number of players (1-10): "))
+                if 1 <= num_players <= 10:
                     break
-                print("Please enter a number between 2 and 10.")
+                print("Please enter a number between 1 and 10.")
             except ValueError:
                 print("Please enter a valid number.")
         

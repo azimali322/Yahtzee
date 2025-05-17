@@ -180,6 +180,41 @@ class TestGameManager(unittest.TestCase):
         self.assertIn("Bob", output)
         self.assertIn("200", output)
         self.assertIn("Tie for 2nd place between: Alice, Charlie", output)
+    
+    @patch('builtins.input')
+    def test_setup_game_single_player(self, mock_input):
+        """Test setting up a single-player game."""
+        mock_input.side_effect = ["1", "Alice"]
+        
+        self.game.setup_game()
+        
+        self.assertEqual(len(self.game.players), 1)
+        self.assertEqual([name for name, _ in self.game.players], ["Alice"])
+        self.assertEqual(self.game.current_player_index, 0)
+    
+    def test_single_player_rankings(self):
+        """Test rankings display for a single player."""
+        self.game.players = [
+            ("Alice", self._create_mock_scoresheet(300))
+        ]
+        
+        rankings = self.game.get_rankings()
+        
+        expected = [
+            (1, "Alice", 300)
+        ]
+        self.assertEqual(rankings, expected)
+        
+        # Test the display output
+        with patch('sys.stdout', new=StringIO()) as fake_output:
+            self.game.display_rankings()
+            output = fake_output.getvalue()
+        
+        # Verify the output contains the correct information
+        self.assertIn("=== Final Rankings ===", output)
+        self.assertIn("   1  Alice             300", output)
+        # No tie message should be present
+        self.assertNotIn("Tie for", output)
 
 if __name__ == '__main__':
     unittest.main() 
