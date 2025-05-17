@@ -4,7 +4,8 @@ class GameManager:
     """Manages a multiplayer Yahtzee game."""
     
     def __init__(self):
-        self.players = []  # List of (name, scoresheet) tuples
+        self.players = []  # List of (name, scoresheet) tuples for active players
+        self.quit_players = []  # List of (name, scoresheet) tuples for players who quit
         self.current_player_index = 0
         self.dice = Dice()
     
@@ -38,9 +39,25 @@ class GameManager:
         """Returns the current player's name and scoresheet."""
         return self.players[self.current_player_index]
     
+    def remove_player(self, player_name):
+        """Removes a player from the game and adds them to quit_players list."""
+        # Find the player to remove
+        player_to_remove = None
+        for player in self.players:
+            if player[0] == player_name:
+                player_to_remove = player
+                break
+        
+        if player_to_remove:
+            self.quit_players.append(player_to_remove)
+            self.players = [(name, sheet) for name, sheet in self.players if name != player_name]
+            if self.current_player_index >= len(self.players):
+                self.current_player_index = 0
+        return len(self.players) > 0  # Return True if there are still players in the game
+
     def is_game_over(self):
-        """Checks if all players have completed their scoresheets."""
-        return all(scoresheet.is_complete() for _, scoresheet in self.players)
+        """Checks if all players have completed their scoresheets or if no players remain."""
+        return len(self.players) == 0 or all(scoresheet.is_complete() for _, scoresheet in self.players)
     
     def get_rankings(self):
         """
@@ -101,4 +118,23 @@ class GameManager:
             suffix = 'th'
         else:
             suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(rank % 10, 'th')
-        return suffix 
+        return suffix
+
+    def display_all_scores(self):
+        """Displays scores for all players, including those who quit."""
+        all_players = self.players + self.quit_players
+        if not all_players:
+            return
+        
+        # Sort all players by score
+        sorted_players = sorted(all_players, key=lambda x: x[1].get_grand_total(), reverse=True)
+        
+        print("\n=== Final Scores (Including Players Who Quit) ===")
+        print(f"{'Player':<20} {'Score':>10} {'Status':>10}")
+        print("-" * 42)
+        
+        for name, scoresheet in sorted_players:
+            status = "Active" if (name, scoresheet) in self.players else "Quit"
+            score = scoresheet.get_grand_total()
+            print(f"{name:<20} {score:>10} {status:>10}")
+        print("-" * 42) 

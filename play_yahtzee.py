@@ -93,10 +93,18 @@ def play_turn(game_manager):
     print(f"\nScored {score} points in {category}")
     scoresheet.display_scoresheet()
 
+    # Ask if player wants to quit after completing their turn
+    if input("\nWould you like to quit the game? (y/n): ").lower() == 'y':
+        print(f"\n{name} has left the game.")
+        return game_manager.remove_player(name)
+    
+    return True  # Continue game
+
 def main():
     """Main game loop."""
     print("Welcome to Yahtzee!")
     print("You can play alone or with up to 9 other players.")
+    print("Players can choose to quit after each round.")
     
     # Setup game
     game = GameManager()
@@ -104,15 +112,24 @@ def main():
     
     # Main game loop
     while not game.is_game_over():
-        play_turn(game)
+        if not play_turn(game):
+            if len(game.players) == 0:
+                print("\nAll players have quit.")
+                game.display_all_scores()
+                break
         game.next_turn()
     
     # Display final results
-    print("\nGame Over!")
-    if len(game.players) == 1:
-        name, scoresheet = game.players[0]
-        print(f"\nFinal Score for {name}: {scoresheet.get_grand_total()}")
-    game.display_rankings()
+    if len(game.players) > 0:
+        print("\nGame Over!")
+        if len(game.players) == 1:
+            name, scoresheet = game.players[0]
+            print(f"\nFinal Score for {name}: {scoresheet.get_grand_total()}")
+        game.display_rankings()
+        # Also show scores for players who quit
+        if game.quit_players:
+            print("\nPlayers who quit earlier:")
+            game.display_all_scores()
 
 if __name__ == "__main__":
     main() 
