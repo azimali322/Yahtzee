@@ -206,35 +206,63 @@ class ScoreSheet:
         # print(f"Warning: Unknown category '{category_name}' for potential score calculation.")
         return 0
 
-    def record_score(self, category_name, dice_values):
-        """Records the score for a category if it's not already scored."""
+    def _get_corresponding_upper_category(self, die_value):
+        """Gets the upper section category name for a given die face value."""
+        if 1 <= die_value <= 6:
+            return [ONES, TWOS, THREES, FOURS, FIVES, SIXES][die_value - 1]
+        return None
+
+    def record_score(self, category_name, dice_values, forced_score=None):
+        """Records the score for a category if it's not already scored. Can accept a forced_score."""
         if category_name not in self.scores:
-            print(f"Error: Category '{category_name}' does not exist.")
             return False
         if self.scores[category_name] is not None:
-            print(f"Error: Category '{category_name}' has already been scored ({self.scores[category_name]}).")
             return False
         if not dice_values or len(dice_values) != 5:
-            print("Error: Must provide 5 dice values to record a score.")
             return False
 
-        score_to_record = self.get_potential_score(category_name, dice_values)
-        self.scores[category_name] = score_to_record
-
-        # Yahtzee Bonus Logic:
-        # If a Yahtzee is rolled (all 5 dice same), AND the "Yahtzee" box has already been scored with 50,
-        # AND the current category being scored is NOT "Yahtzee" itself (unless it's a 0 score for Yahtzee),
-        # then a 100 point bonus is awarded.
-        # The player must still place the current roll in an available category.
+        score_to_record = 0
         is_current_roll_yahtzee = len(set(dice_values)) == 1 and len(dice_values) == 5
         
+        # First handle forced score if provided
+        if forced_score is not None:
+            score_to_record = forced_score
+        # Then handle Joker rules if applicable
+        elif is_current_roll_yahtzee and self.scores.get(YAHTZEE) == 50 and category_name != YAHTZEE:
+            # Add Yahtzee bonus
+            self.yahtzee_bonus_score += 100
+            
+            # Get Joker action
+            joker_action = self.determine_joker_action(dice_values)
+            
+            if joker_action['type'] == 'force_upper':
+                score_to_record = joker_action['score']
+            elif joker_action['type'] == 'choose_lower':
+                # For lower section categories, ALWAYS use the Joker options if available
+                if category_name in joker_action['options']:
+                    score_to_record = joker_action['options'][category_name]
+                else:
+                    # Only use normal scoring if category not in Joker options
+                    score_to_record = self.get_potential_score(category_name, dice_values)
+            elif joker_action['type'] == 'force_zero_upper':
+                score_to_record = 0
+            else:
+                # If no Joker action available, use normal scoring
+                score_to_record = self.get_potential_score(category_name, dice_values)
+        else:
+            # Normal scoring (not a Joker and no forced score)
+            score_to_record = self.get_potential_score(category_name, dice_values)
+        
+        # Special handling for fixed-score categories when using Joker rules
         if is_current_roll_yahtzee and self.scores.get(YAHTZEE) == 50:
-            if category_name != YAHTZEE: # Bonus for subsequent Yahtzees not scored in Yahtzee box
-                 self.yahtzee_bonus_score += 100
-            # If they are scoring YAHTZEE category again (e.g. for a zero if they must), no extra bonus here.
-            # The original 50 in YAHTZEE box is what enables this.
-
-        print(f"Score of {score_to_record} recorded for {category_name}.")
+            if category_name == FULL_HOUSE:
+                score_to_record = 25
+            elif category_name == SMALL_STRAIGHT:
+                score_to_record = 30
+            elif category_name == LARGE_STRAIGHT:
+                score_to_record = 40
+        
+        self.scores[category_name] = score_to_record
         return True
 
     def add_custom_category(self, category_name, scoring_function, display_name=None):
@@ -319,6 +347,61 @@ class ScoreSheet:
         print(f"  {'Total Lower':<15}: {self.get_lower_section_score():>3}") # This total needs to be accurate with custom
         print(f"\n  {'GRAND TOTAL':<15}: {self.get_grand_total():>3}")
         print("------------------\n")
+
+    def determine_joker_action(self, dice_values_as_yahtzee):
+        """Determines action based on Forced Joker rules. Assumes current roll IS a Yahtzee and YAHTZEE category is 50."""
+        if not (len(set(dice_values_as_yahtzee)) == 1 and len(dice_values_as_yahtzee) == 5):
+            return {'type': 'error', 'message': 'Not a Yahtzee roll for Joker rule determination.'}
+
+        die_face_value = dice_values_as_yahtzee[0]
+        corresponding_upper_cat = self._get_corresponding_upper_category(die_face_value)
+
+        # Rule 1: Upper Section Priority if Unused
+        if corresponding_upper_cat and self.scores.get(corresponding_upper_cat) is None:
+            score_for_upper = sum(dice_values_as_yahtzee) 
+            return {'type': 'force_upper', 'category': corresponding_upper_cat, 'score': score_for_upper}
+
+        # Rule 2: Lower Section Joker if corresponding Upper Used (or N/A)
+        available_lower_options = {}
+        has_any_available_lower = False
+        yahtzee_sum_score = sum(dice_values_as_yahtzee)
+
+        # Fixed scores for specific categories
+        if self.scores.get(FULL_HOUSE) is None:
+            available_lower_options[FULL_HOUSE] = 25  # Fixed score for Full House
+            has_any_available_lower = True
+        if self.scores.get(SMALL_STRAIGHT) is None:
+            available_lower_options[SMALL_STRAIGHT] = 30  # Fixed score for Small Straight
+            has_any_available_lower = True
+        if self.scores.get(LARGE_STRAIGHT) is None:
+            available_lower_options[LARGE_STRAIGHT] = 40  # Fixed score for Large Straight
+            has_any_available_lower = True
+        
+        # Sum-based scores for other categories
+        if self.scores.get(THREE_OF_A_KIND) is None:
+            available_lower_options[THREE_OF_A_KIND] = yahtzee_sum_score  # Sum of all dice
+            has_any_available_lower = True
+        if self.scores.get(FOUR_OF_A_KIND) is None:
+            available_lower_options[FOUR_OF_A_KIND] = yahtzee_sum_score  # Sum of all dice
+            has_any_available_lower = True
+        if self.scores.get(CHANCE) is None:
+            available_lower_options[CHANCE] = yahtzee_sum_score  # Sum of all dice
+            has_any_available_lower = True
+        
+        if has_any_available_lower:
+            return {'type': 'choose_lower', 'options': available_lower_options}
+
+        # Rule 3: Zero in Unused Upper if corresponding Upper & All Lower Used
+        available_zero_upper_options = []
+        for cat_name in UPPER_SECTION_CATEGORIES:
+            if self.scores.get(cat_name) is None:
+                available_zero_upper_options.append(cat_name)
+        
+        if available_zero_upper_options:
+            return {'type': 'force_zero_upper', 'options': available_zero_upper_options, 'score': 0}
+
+        # Fallback: All categories are full, which implies game should be over.
+        return {'type': 'all_categories_full'}
 
 # Example usage (can be removed later or moved to main.py)
 if __name__ == "__main__":

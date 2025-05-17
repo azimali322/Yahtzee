@@ -306,5 +306,193 @@ class TestDice(unittest.TestCase):
         self.assertFalse(dice_set.dice[0].is_held, "Dice should be unheld after reset")
         self.assertFalse(dice_set.dice[1].is_held, "Dice should be unheld after reset")
 
+class TestJokerRules(unittest.TestCase):
+    def setUp(self):
+        self.sheet = ScoreSheet()
+
+    def test_joker_rule_upper_section_priority(self):
+        """Test that Joker rule forces upper section scoring if available."""
+        with io.StringIO() as buf, redirect_stdout(buf):
+            self.sheet.record_score(YAHTZEE, [5, 5, 5, 5, 5])  # Score first Yahtzee
+        
+        # Simulate a Yahtzee of 3s when Threes category is open
+        result = self.sheet.determine_joker_action([3, 3, 3, 3, 3])
+        self.assertEqual(result['type'], 'force_upper')
+        self.assertEqual(result['category'], THREES)
+        self.assertEqual(result['score'], 15)
+
+    def test_joker_rule_lower_section_options(self):
+        """Test that Joker rule offers lower section options when upper section is used."""
+        with io.StringIO() as buf, redirect_stdout(buf):
+            self.sheet.record_score(YAHTZEE, [5, 5, 5, 5, 5])  # Score first Yahtzee
+            self.sheet.record_score(FIVES, [5, 5, 5, 1, 1])    # Use up corresponding upper section
+        
+        # Simulate another Yahtzee of 5s
+        result = self.sheet.determine_joker_action([5, 5, 5, 5, 5])
+        self.assertEqual(result['type'], 'choose_lower')
+        self.assertTrue(isinstance(result['options'], dict))
+        # Check available scores
+        if FULL_HOUSE in result['options']:
+            self.assertEqual(result['options'][FULL_HOUSE], 25)
+        if SMALL_STRAIGHT in result['options']:
+            self.assertEqual(result['options'][SMALL_STRAIGHT], 30)
+        if LARGE_STRAIGHT in result['options']:
+            self.assertEqual(result['options'][LARGE_STRAIGHT], 40)
+
+    def test_joker_rule_force_zero_upper(self):
+        """Test that Joker rule forces zero in upper section when all lower sections are used."""
+        with io.StringIO() as buf, redirect_stdout(buf):
+            # First score Yahtzee
+            self.sheet.record_score(YAHTZEE, [5, 5, 5, 5, 5])
+            # Use up corresponding upper section
+            self.sheet.record_score(FIVES, [5, 5, 5, 1, 1])
+            # Fill all lower section categories
+            self.sheet.record_score(THREE_OF_A_KIND, [3, 3, 3, 3, 3])
+            self.sheet.record_score(FOUR_OF_A_KIND, [4, 4, 4, 4, 4])
+            self.sheet.record_score(FULL_HOUSE, [2, 2, 3, 3, 3])
+            self.sheet.record_score(SMALL_STRAIGHT, [1, 2, 3, 4, 5])
+            self.sheet.record_score(LARGE_STRAIGHT, [2, 3, 4, 5, 6])
+            self.sheet.record_score(CHANCE, [6, 6, 6, 6, 6])
+
+        # Simulate another Yahtzee of 5s
+        result = self.sheet.determine_joker_action([5, 5, 5, 5, 5])
+        self.assertEqual(result['type'], 'force_zero_upper')
+        self.assertTrue(isinstance(result['options'], list))
+        self.assertEqual(result['score'], 0)
+
+class TestMaximumScores(unittest.TestCase):
+    def setUp(self):
+        self.sheet = ScoreSheet()
+
+    def test_maximum_score_with_thirteen_yahtzees(self):
+        """Test maximum possible score of 1575 with 13 Yahtzees."""
+        with io.StringIO() as buf, redirect_stdout(buf):
+            # First Yahtzee in Yahtzee box (50 points)
+            self.sheet.record_score(YAHTZEE, [6, 6, 6, 6, 6])    # 50 points
+            
+            # Score lower section first to maximize Yahtzee bonuses
+            # When scoring a Yahtzee in other categories, we get the category's Joker score
+            self.sheet.record_score(FOUR_OF_A_KIND, [6, 6, 6, 6, 6])  # 30 points + 100 bonus
+            self.sheet.record_score(THREE_OF_A_KIND, [6, 6, 6, 6, 6]) # 30 points + 100 bonus
+            self.sheet.record_score(FULL_HOUSE, [6, 6, 6, 6, 6])      # 25 points + 100 bonus
+            self.sheet.record_score(SMALL_STRAIGHT, [6, 6, 6, 6, 6])  # 30 points + 100 bonus
+            self.sheet.record_score(LARGE_STRAIGHT, [6, 6, 6, 6, 6])  # 40 points + 100 bonus
+            self.sheet.record_score(CHANCE, [6, 6, 6, 6, 6])          # 30 points + 100 bonus
+            
+            # Score upper section last
+            self.sheet.record_score(SIXES, [6, 6, 6, 6, 6])      # 30 points + 100 bonus
+            self.sheet.record_score(FIVES, [5, 5, 5, 5, 5])      # 25 points + 100 bonus
+            self.sheet.record_score(FOURS, [4, 4, 4, 4, 4])      # 20 points + 100 bonus
+            self.sheet.record_score(THREES, [3, 3, 3, 3, 3])     # 15 points + 100 bonus
+            self.sheet.record_score(TWOS, [2, 2, 2, 2, 2])       # 10 points + 100 bonus
+            self.sheet.record_score(ONES, [1, 1, 1, 1, 1])       # 5 points + 100 bonus
+
+        # Verify each component of the score
+        self.assertEqual(self.sheet.get_upper_section_subtotal(), 105)  # Sum of upper section
+        self.assertEqual(self.sheet.get_upper_section_bonus(), 35)      # Bonus for >=63
+        self.assertEqual(self.sheet.scores[YAHTZEE], 50)               # Initial Yahtzee
+        self.assertEqual(self.sheet.yahtzee_bonus_score, 1200)         # 12 additional Yahtzees * 100
+        
+        # Lower section scores with Joker rules
+        expected_scores = {
+            FOUR_OF_A_KIND: 30,    # Sum of dice for [6,6,6,6,6]
+            THREE_OF_A_KIND: 30,   # Sum of dice for [6,6,6,6,6]
+            FULL_HOUSE: 25,        # Fixed score for Full House
+            SMALL_STRAIGHT: 30,    # Fixed score for Small Straight
+            LARGE_STRAIGHT: 40,    # Fixed score for Large Straight
+            CHANCE: 30,            # Sum of dice for [6,6,6,6,6]
+            YAHTZEE: 50           # Initial Yahtzee score
+        }
+        for category, expected_score in expected_scores.items():
+            self.assertEqual(self.sheet.scores[category], expected_score, 
+                           f"Wrong score for {category}. Expected {expected_score}, got {self.sheet.scores[category]}")
+        
+        # Final total: 105 + 35 + 235 + 1200 = 1575
+        self.assertEqual(self.sheet.get_grand_total(), 1575)
+
+    def test_maximum_score_without_yahtzee_bonus(self):
+        """Test maximum possible score of 300 with exactly one Yahtzee but no bonus."""
+        with io.StringIO() as buf, redirect_stdout(buf):
+            # Upper section optimal scoring
+            self.sheet.record_score(SIXES, [6, 6, 6, 6, 5])    # 24
+            self.sheet.record_score(FIVES, [5, 5, 5, 5, 4])    # 20
+            self.sheet.record_score(FOURS, [4, 4, 4, 4, 3])    # 16
+            self.sheet.record_score(THREES, [3, 3, 3, 3, 2])   # 12
+            self.sheet.record_score(TWOS, [2, 2, 2, 2, 1])     # 8
+            self.sheet.record_score(ONES, [1, 1, 1, 1, 6])     # 4
+            
+            # Lower section optimal scoring - with one Yahtzee but no bonuses
+            self.sheet.record_score(YAHTZEE, [6, 6, 6, 6, 6])       # 50 (one Yahtzee)
+            self.sheet.record_score(FOUR_OF_A_KIND, [6, 6, 6, 6, 5])  # 29
+            self.sheet.record_score(THREE_OF_A_KIND, [6, 6, 6, 6, 5]) # 29 (four of a kind counts for three of a kind)
+            self.sheet.record_score(FULL_HOUSE, [5, 5, 6, 6, 6])      # 25
+            self.sheet.record_score(SMALL_STRAIGHT, [1, 2, 3, 4, 5])  # 30
+            self.sheet.record_score(LARGE_STRAIGHT, [2, 3, 4, 5, 6])  # 40
+            self.sheet.record_score(CHANCE, [6, 6, 6, 6, 5])          # 29
+
+        # Verify each component of the score
+        self.assertEqual(self.sheet.get_upper_section_subtotal(), 84)  # Sum of upper section
+        self.assertEqual(self.sheet.get_upper_section_bonus(), 35)     # Bonus for >=63
+        self.assertEqual(self.sheet.yahtzee_bonus_score, 0)           # No Yahtzee bonuses
+        
+        # Lower section scores
+        expected_scores = {
+            FOUR_OF_A_KIND: 29,    # Sum of [6,6,6,6,5]
+            THREE_OF_A_KIND: 29,   # Sum of [6,6,6,6,5] (four of a kind counts for three of a kind)
+            FULL_HOUSE: 25,        # Fixed score
+            SMALL_STRAIGHT: 30,    # Fixed score
+            LARGE_STRAIGHT: 40,    # Fixed score
+            CHANCE: 29,            # Sum of [6,6,6,6,5]
+            YAHTZEE: 50           # One Yahtzee
+        }
+        for category, expected_score in expected_scores.items():
+            self.assertEqual(self.sheet.scores[category], expected_score,
+                           f"Wrong score for {category}. Expected {expected_score}, got {self.sheet.scores[category]}")
+        
+        # Final total: 84 + 35 + 232 = 351
+        self.assertEqual(self.sheet.get_grand_total(), 351)
+
+    def test_maximum_score_without_five_of_a_kind(self):
+        """Test maximum possible score of 301 without any five-of-a-kind."""
+        with io.StringIO() as buf, redirect_stdout(buf):
+            # Upper section optimal scoring (using four-of-a-kind)
+            self.sheet.record_score(SIXES, [6, 6, 6, 6, 5])    # 24
+            self.sheet.record_score(FIVES, [5, 5, 5, 5, 4])    # 20
+            self.sheet.record_score(FOURS, [4, 4, 4, 4, 3])    # 16
+            self.sheet.record_score(THREES, [3, 3, 3, 3, 2])   # 12
+            self.sheet.record_score(TWOS, [2, 2, 2, 2, 1])     # 8
+            self.sheet.record_score(ONES, [1, 1, 1, 1, 6])     # 4
+            
+            # Lower section optimal scoring - no five-of-a-kind anywhere
+            self.sheet.record_score(YAHTZEE, [1, 2, 3, 4, 6])       # 0 (not a Yahtzee)
+            self.sheet.record_score(FOUR_OF_A_KIND, [6, 6, 6, 6, 5])  # 29
+            self.sheet.record_score(THREE_OF_A_KIND, [6, 6, 6, 6, 5]) # 29 (four of a kind counts for three of a kind)
+            self.sheet.record_score(FULL_HOUSE, [6, 6, 6, 5, 5])      # 25
+            self.sheet.record_score(SMALL_STRAIGHT, [1, 2, 3, 4, 5])  # 30
+            self.sheet.record_score(LARGE_STRAIGHT, [2, 3, 4, 5, 6])  # 40
+            self.sheet.record_score(CHANCE, [6, 6, 6, 6, 5])          # 29
+
+        # Verify each component of the score
+        self.assertEqual(self.sheet.get_upper_section_subtotal(), 84)  # Sum of upper section
+        self.assertEqual(self.sheet.get_upper_section_bonus(), 35)     # Bonus for >=63
+        self.assertEqual(self.sheet.yahtzee_bonus_score, 0)           # No Yahtzee bonuses
+        
+        # Lower section scores
+        expected_scores = {
+            FOUR_OF_A_KIND: 29,    # Sum of [6,6,6,6,5]
+            THREE_OF_A_KIND: 29,   # Sum of [6,6,6,6,5] (four of a kind counts for three of a kind)
+            FULL_HOUSE: 25,        # Fixed score
+            SMALL_STRAIGHT: 30,    # Fixed score
+            LARGE_STRAIGHT: 40,    # Fixed score
+            CHANCE: 29,            # Sum of [6,6,6,6,5]
+            YAHTZEE: 0            # Not a Yahtzee
+        }
+        for category, expected_score in expected_scores.items():
+            self.assertEqual(self.sheet.scores[category], expected_score,
+                           f"Wrong score for {category}. Expected {expected_score}, got {self.sheet.scores[category]}")
+        
+        # Final total: 84 + 35 + 182 = 301
+        self.assertEqual(self.sheet.get_grand_total(), 301)
+
 if __name__ == '__main__':
     unittest.main() 
