@@ -149,6 +149,47 @@ class TestScoreSheetCalculations(unittest.TestCase):
         self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [1, 2, 3, 4, 5]), 30)
         self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [2, 3, 4, 5, 6]), 30)
 
+    def test_minimum_possible_score(self):
+        """Test minimum possible score of 5 points.
+        
+        This is achieved by:
+        1. Scoring 0 in all Upper Section categories
+        2. Scoring 0 in all Lower Section categories except Chance
+        3. Scoring minimum possible (5) in Chance with five ones
+        """
+        with io.StringIO() as buf, redirect_stdout(buf):
+            # Upper section - all zeros
+            self.sheet.record_score(ONES, [2, 2, 3, 3, 4])      # 0
+            self.sheet.record_score(TWOS, [3, 3, 4, 4, 5])      # 0
+            self.sheet.record_score(THREES, [4, 4, 5, 5, 6])    # 0
+            self.sheet.record_score(FOURS, [5, 5, 6, 6, 2])     # 0
+            self.sheet.record_score(FIVES, [6, 6, 2, 2, 3])     # 0
+            self.sheet.record_score(SIXES, [2, 2, 3, 3, 4])     # 0
+            
+            # Verify upper section scores
+            self.assertEqual(self.sheet.get_upper_section_subtotal(), 0)
+            self.assertEqual(self.sheet.get_upper_section_bonus(), 0)
+            
+            # Lower section - all zeros except Chance
+            self.sheet.record_score(THREE_OF_A_KIND, [1, 2, 3, 4, 5])    # 0 (no three of a kind)
+            self.sheet.record_score(FOUR_OF_A_KIND, [1, 2, 3, 4, 5])     # 0 (no four of a kind)
+            self.sheet.record_score(FULL_HOUSE, [1, 2, 2, 3, 3])         # 0 (not a valid full house)
+            self.sheet.record_score(SMALL_STRAIGHT, [1, 1, 1, 2, 3])     # 0 (no sequence of 4)
+            self.sheet.record_score(LARGE_STRAIGHT, [1, 1, 2, 3, 4])     # 0 (no sequence of 5)
+            self.sheet.record_score(YAHTZEE, [1, 2, 3, 4, 5])           # 0 (not five of a kind)
+            
+            # Chance - minimum possible score with five ones
+            self.sheet.record_score(CHANCE, [1, 1, 1, 1, 1])            # 5 (sum of dice)
+        
+        # Verify individual section totals
+        self.assertEqual(self.sheet.get_upper_section_subtotal(), 0, "Upper section should be 0")
+        self.assertEqual(self.sheet.get_upper_section_bonus(), 0, "No bonus should be awarded")
+        self.assertEqual(self.sheet.get_lower_section_score(), 5, "Lower section should be 5 (Chance only)")
+        self.assertEqual(self.sheet.yahtzee_bonus_score, 0, "No Yahtzee bonus should be awarded")
+        
+        # Verify final total
+        self.assertEqual(self.sheet.get_grand_total(), 5, "Minimum possible score should be 5")
+
 class TestDie(unittest.TestCase):
     @patch('random.randint')
     def test_die_initialization(self, mock_randint):
@@ -411,7 +452,7 @@ class TestMaximumScores(unittest.TestCase):
         self.assertEqual(self.sheet.get_grand_total(), 1575)
 
     def test_maximum_score_without_yahtzee_bonus(self):
-        """Test maximum possible score of 300 with exactly one Yahtzee but no bonus."""
+        """Test maximum possible score of 351 with exactly one Yahtzee but no bonus."""
         with io.StringIO() as buf, redirect_stdout(buf):
             # Upper section optimal scoring
             self.sheet.record_score(SIXES, [6, 6, 6, 6, 5])    # 24
@@ -493,6 +534,57 @@ class TestMaximumScores(unittest.TestCase):
         
         # Final total: 84 + 35 + 182 = 301
         self.assertEqual(self.sheet.get_grand_total(), 301)
+
+    def test_minimum_score_five_points(self):
+        """Test minimum possible score of 5 points by scoring zero in all categories except Chance with five ones."""
+        with io.StringIO() as buf, redirect_stdout(buf):
+            # Score zero in all upper section categories
+            self.sheet.record_score(ONES, [2, 2, 2, 2, 2])      # 0 points
+            self.sheet.record_score(TWOS, [3, 3, 3, 3, 3])      # 0 points
+            self.sheet.record_score(THREES, [4, 4, 4, 4, 4])    # 0 points
+            self.sheet.record_score(FOURS, [5, 5, 5, 5, 5])     # 0 points
+            self.sheet.record_score(FIVES, [6, 6, 6, 6, 6])     # 0 points
+            self.sheet.record_score(SIXES, [1, 1, 1, 1, 1])     # 0 points
+            
+            # Score zero in all lower section categories except Chance
+            self.sheet.record_score(THREE_OF_A_KIND, [1, 2, 3, 4, 5])  # 0 points
+            self.sheet.record_score(FOUR_OF_A_KIND, [1, 2, 3, 4, 5])   # 0 points
+            self.sheet.record_score(FULL_HOUSE, [1, 1, 2, 3, 4])       # 0 points
+            self.sheet.record_score(SMALL_STRAIGHT, [1, 1, 1, 1, 2])   # 0 points
+            self.sheet.record_score(LARGE_STRAIGHT, [1, 1, 1, 1, 2])   # 0 points
+            self.sheet.record_score(YAHTZEE, [1, 2, 3, 4, 5])          # 0 points
+            
+            # Score minimum points in Chance with five ones
+            self.sheet.record_score(CHANCE, [1, 1, 1, 1, 1])           # 5 points
+
+        # Verify each component of the score
+        self.assertEqual(self.sheet.get_upper_section_subtotal(), 0)  # No points in upper section
+        self.assertEqual(self.sheet.get_upper_section_bonus(), 0)     # No bonus (requires 63+)
+        self.assertEqual(self.sheet.yahtzee_bonus_score, 0)          # No Yahtzee bonus
+        
+        # Verify individual category scores
+        expected_scores = {
+            ONES: 0,
+            TWOS: 0,
+            THREES: 0,
+            FOURS: 0,
+            FIVES: 0,
+            SIXES: 0,
+            THREE_OF_A_KIND: 0,
+            FOUR_OF_A_KIND: 0,
+            FULL_HOUSE: 0,
+            SMALL_STRAIGHT: 0,
+            LARGE_STRAIGHT: 0,
+            YAHTZEE: 0,
+            CHANCE: 5  # Only score: five ones
+        }
+        
+        for category, expected_score in expected_scores.items():
+            self.assertEqual(self.sheet.scores[category], expected_score,
+                           f"Wrong score for {category}. Expected {expected_score}, got {self.sheet.scores[category]}")
+        
+        # Final total should be exactly 5 points
+        self.assertEqual(self.sheet.get_grand_total(), 5)
 
 if __name__ == '__main__':
     unittest.main() 
