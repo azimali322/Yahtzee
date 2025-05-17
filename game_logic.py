@@ -317,36 +317,40 @@ class ScoreSheet:
         return all(score is not None for score in self.scores.values())
 
     def display_scoresheet(self):
-        """Prints a formatted representation of the scoresheet."""
-        print("\n--- Scoresheet ---")
-        print("Upper Section:")
-        for cat in UPPER_SECTION_CATEGORIES:
-            score_display = str(self.scores[cat]) if self.scores[cat] is not None else "-"
-            print(f"  {cat:<15}: {score_display:>3}")
-        print(f"  {'Upper Subtotal':<15}: {self.get_upper_section_subtotal():>3}")
-        print(f"  {'Bonus (>=63)':<15}: {self.get_upper_section_bonus():>3}")
-        print(f"  {'Total Upper':<15}: {self.get_total_upper_score():>3}")
+        """Displays the current state of the scoresheet in a formatted way."""
+        print("\n=== SCORESHEET ===")
         
+        # Upper section
+        print("\nUpper Section:")
+        print("-" * 20)
+        for category in UPPER_SECTION_CATEGORIES:
+            score = self.scores[category]
+            score_str = str(score) if score is not None else "-"
+            print(f"{category:<15} {score_str:>4}")
+        
+        subtotal = self.get_upper_section_subtotal()
+        bonus = self.get_upper_section_bonus()
+        print("-" * 20)
+        print(f"{'Subtotal':<15} {subtotal:>4}")
+        print(f"{'Bonus':<15} {bonus:>4}")
+        print(f"{'Upper Total':<15} {subtotal + bonus:>4}")
+        
+        # Lower section
         print("\nLower Section:")
-        for cat in LOWER_SECTION_CATEGORIES:
-            score_display = str(self.scores[cat]) if self.scores[cat] is not None else "-"
-            print(f"  {cat:<15}: {score_display:>3}")
-
-        # Display custom categories if any
-        custom_cats_displayed = False
-        for cat_name in self.scores.keys():
-            if cat_name not in ALL_CATEGORIES: # A bit of a hack, assumes ALL_CATEGORIES is static std
-                if not custom_cats_displayed:
-                    print("\nCustom Categories:")
-                    custom_cats_displayed = True
-                score_display = str(self.scores[cat_name]) if self.scores[cat_name] is not None else "-"
-                print(f"  {cat_name:<15}: {score_display:>3}")
-
-
-        print(f"\n  {'Yahtzee Bonus':<15}: {self.yahtzee_bonus_score:>3}")
-        print(f"  {'Total Lower':<15}: {self.get_lower_section_score():>3}") # This total needs to be accurate with custom
-        print(f"\n  {'GRAND TOTAL':<15}: {self.get_grand_total():>3}")
-        print("------------------\n")
+        print("-" * 20)
+        for category in LOWER_SECTION_CATEGORIES:
+            score = self.scores[category]
+            score_str = str(score) if score is not None else "-"
+            print(f"{category:<15} {score_str:>4}")
+        
+        # Yahtzee bonuses
+        if self.yahtzee_bonus_score > 0:
+            print(f"{'Yahtzee Bonus':<15} {self.yahtzee_bonus_score:>4}")
+        
+        # Grand total
+        print("=" * 20)
+        print(f"{'GRAND TOTAL':<15} {self.get_grand_total():>4}")
+        print("=" * 20)
 
     def determine_joker_action(self, dice_values_as_yahtzee):
         """Determines action based on Forced Joker rules. Assumes current roll IS a Yahtzee and YAHTZEE category is 50."""
