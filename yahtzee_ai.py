@@ -335,9 +335,19 @@ class YahtzeeAI:
         2. Securing upper section bonus if close
         3. Taking guaranteed points over risky plays
         """
+        # Map category names to their values for upper section
+        value_map = {
+            ONES: 1,
+            TWOS: 2,
+            THREES: 3,
+            FOURS: 4,
+            FIVES: 5,
+            SIXES: 6
+        }
+        
         # If we need specific upper section values, focus on those
         if game_state['needed_for_bonus'] <= 15 and game_state['remaining_upper']:
-            needed_sections = [int(cat[-1]) for cat in game_state['remaining_upper']]
+            needed_sections = [value_map[cat] for cat in game_state['remaining_upper']]
             for val in needed_sections:
                 if dice_analysis['counts'][val] >= 2:
                     return [i for i, d in enumerate(current_values) 
@@ -350,7 +360,31 @@ class YahtzeeAI:
                 return [i for i, val in enumerate(current_values) 
                        if val != most_common_val]
         
-        return None
+        # If we have a potential straight, try to complete it
+        if dice_analysis['sequence_length'] >= 3:
+            if (LARGE_STRAIGHT in game_state['available_categories'] or 
+                SMALL_STRAIGHT in game_state['available_categories']):
+                return [i for i, val in enumerate(current_values) 
+                       if val not in dice_analysis['sequence']]
+        
+        # If we have a pair and potential for full house
+        if (dice_analysis['has_pair'] and FULL_HOUSE in game_state['available_categories'] 
+            and not dice_analysis['has_three']):
+            pair_val = next(val for val, count in dice_analysis['counts'].items() 
+                          if count == 2)
+            return [i for i, val in enumerate(current_values) 
+                   if val != pair_val]
+        
+        # Default to keeping highest scoring combination
+        if dice_analysis['max_count'] >= 2:
+            most_common_val = dice_analysis['most_common'][0][0]
+            return [i for i, val in enumerate(current_values) 
+                   if val != most_common_val]
+        
+        # If no clear strategy, reroll lowest values
+        sorted_indices = sorted(range(len(current_values)), 
+                              key=lambda i: current_values[i])
+        return sorted_indices[:3]  # Reroll the three lowest values
     
     def _complete_enumeration_strategy(self, current_values, roll_number, game_state, dice_analysis):
         """Fallback to complete enumeration with strategic weighting."""
