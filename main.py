@@ -1,4 +1,5 @@
 from game_logic import Dice, ScoreSheet, ALL_CATEGORIES, UPPER_SECTION_CATEGORIES, LOWER_SECTION_CATEGORIES, YAHTZEE
+from game_manager import GameManager
 import sys
 
 def get_player_input(prompt, allowed_type=str, allowed_values=None, allow_empty=False):
@@ -27,25 +28,14 @@ def get_player_input(prompt, allowed_type=str, allowed_values=None, allow_empty=
                     continue
             else:
                 value = user_input
-
-            if allowed_values:
-                if isinstance(value, list):
-                    # This check might be too restrictive if allowed_values is for each item.
-                    # For now, assuming allowed_values is for the whole list if it's a list.
-                    # Or, if it's a list of choices for string inputs like ['r', 's'].
-                    # The current usage is for string inputs.
-                    if not all(item in allowed_values for item in value) and value:
-                        print(f"Invalid input. Please choose from {allowed_values}.")
-                        continue
-                elif value not in allowed_values:
-                    print(f"Invalid input. Please choose from {allowed_values}.")
-                    continue
+            
+            if allowed_values is not None and value not in allowed_values:
+                print(f"Input must be one of: {', '.join(map(str, allowed_values))}")
+                continue
+            
             return value
         except ValueError:
-            # This primarily catches int(user_input) failure for allowed_type == int
-            print(f"Invalid input. Please enter a valid {allowed_type.__name__}.")
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
+            print(f"Invalid input. Expected {allowed_type.__name__}.")
 
 def play_turn(player_name, dice, scoresheet):
     """Manages a single turn for a player."""
@@ -180,27 +170,42 @@ def play_turn(player_name, dice, scoresheet):
     scoresheet.record_score(chosen_category_name, current_dice_values)
     scoresheet.display_scoresheet()
 
-def game_loop():
-    print("Welcome to Command-Line Yahtzee!")
+def main():
+    """Main game loop."""
+    print("Welcome to Yahtzee!")
+    print("==================")
     
-    player_name = "Player 1" # For now, single player
-    player_dice = Dice()
-    player_scoresheet = ScoreSheet()
-
-    num_turns = len(ALL_CATEGORIES) # Standard Yahtzee has 13 scoring categories for a full game
-
-    for turn_num in range(1, num_turns + 1):
-        print(f"\n==================== Turn {turn_num}/{num_turns} ====================")
-        play_turn(player_name, player_dice, player_scoresheet)
-        if player_scoresheet.is_complete():
-            print("All categories scored! Game finished early.")
+    # Create game manager and set up players
+    game = GameManager()
+    game.setup_game()
+    
+    # Main game loop
+    while True:
+        name, scoresheet = game.get_current_player()
+        print(f"\n=== {name}'s Turn ===")
+        
+        # Display scoresheet
+        scoresheet.display_scoresheet()
+        
+        # Handle player's turn
+        play_turn(name, game.dice, scoresheet)
+        
+        # Check if current player wants to quit
+        if not scoresheet.is_complete():
+            if get_player_input("Would you like to quit? (y/n): ", str, ['y', 'n']) == 'y':
+                if not game.remove_player(name):
+                    print("\nGame Over - All players have quit!")
+                    break
+                continue
+        
+        # Move to next player
+        game.next_turn()
+        
+        # Check if game is complete
+        if all(sheet.is_complete() for _, sheet in game.players):
+            print("\nGame Over!")
+            game.display_rankings()
             break
-    
-    print("\n==================== Game Over ====================")
-    print(f"Final Scores for {player_name}:")
-    player_scoresheet.display_scoresheet()
-    print(f"GRAND TOTAL for {player_name}: {player_scoresheet.get_grand_total()}")
-    print("Thanks for playing!")
 
 if __name__ == "__main__":
-    game_loop() 
+    main() 
