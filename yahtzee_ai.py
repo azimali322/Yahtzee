@@ -279,21 +279,27 @@ class YahtzeeAI:
     def _choose_category_hard(self, dice_values):
         """
         Advanced strategy: Uses expected value calculations and game state analysis.
-        Considers optimal long-term strategy.
+        Considers optimal long-term strategy, category synergies, and risk assessment.
         """
         available_categories = self.scoresheet.get_available_categories()
         if not available_categories:
             return None
             
+        # Calculate game progress
+        total_categories = 13
+        filled_categories = total_categories - len(available_categories)
+        game_progress = filled_categories / total_categories
+            
         # Calculate expected values for each available category
         expected_values = {}
         for category in available_categories:
+            # Base expected value
             base_value = self._calculate_expected_value(category, dice_values, 0)
             
             # Apply strategic weights
             weight = 1.0
             
-            # Prioritize upper section if bonus is achievable
+            # Upper section bonus strategy
             if category in self.UPPER_SECTION:
                 upper_total = sum(self.scoresheet.scores.get(cat, 0) or 0 
                                 for cat in self.UPPER_SECTION 
@@ -304,23 +310,50 @@ class YahtzeeAI:
                 if upper_total < 63:  # Haven't secured bonus yet
                     needed_per_remaining = (63 - upper_total) / max(1, remaining_upper)
                     if base_value >= needed_per_remaining:
-                        weight = 1.2  # Boost weight if this helps achieve bonus
+                        weight *= 1.2  # Boost weight if this helps achieve bonus
+                    elif game_progress > 0.5 and base_value >= 0.8 * needed_per_remaining:
+                        weight *= 1.1  # Slightly boost if close to needed average late game
             
-            # Prioritize Yahtzee if we already have one (for Yahtzee bonus)
-            elif category == YAHTZEE and self.scoresheet.scores.get(YAHTZEE) == 50:
-                weight = 1.3
+            # Yahtzee and bonus Yahtzee strategy
+            if category == YAHTZEE:
+                if self.scoresheet.scores.get(YAHTZEE) == 50:
+                    weight *= 1.3  # Prioritize bonus Yahtzees
+                elif game_progress < 0.5:
+                    weight *= 1.1  # Slightly prioritize first Yahtzee early game
             
-            # Consider game progression
-            total_categories = 13
-            filled_categories = total_categories - len(available_categories)
-            game_progress = filled_categories / total_categories
+            # Consider future potential
+            future_value = self._calculate_future_potential(category, available_categories)
+            opportunity_cost = future_value * (1 - game_progress)
+            weight *= (1 - opportunity_cost/50)  # Scale down if high opportunity cost
             
-            # Late game: prefer reliable scores
+            # Add category synergy analysis
+            synergy_bonus = self._calculate_category_synergy(category, dice_values)
+            weight *= (1 + synergy_bonus)
+            
+            # Add risk assessment
+            risk_factor = self._assess_risk(category, dice_values, game_progress)
+            weight *= (1 + risk_factor)
+            
+            # Late game adjustments
             if game_progress > 0.7:
                 if category in [CHANCE, THREE_OF_A_KIND]:
-                    weight = 1.1
+                    weight *= 1.1  # Prefer reliable scores late
+                if category == YAHTZEE and self.scoresheet.scores.get(YAHTZEE) is None:
+                    weight *= 0.7  # Penalize attempting first Yahtzee late
             
+            # Early game adjustments
+            if game_progress < 0.3:
+                if category == CHANCE:
+                    weight *= 0.8  # Save Chance for later
+                if category in self.UPPER_SECTION and base_value >= 8:
+                    weight *= 1.1  # Prioritize good upper section early
+            
+            # Calculate final weighted value
             expected_values[category] = base_value * weight
+            
+            # Add minimum score protection
+            if base_value > 0 and expected_values[category] < base_value * 0.5:
+                expected_values[category] = base_value * 0.5  # Don't reduce too much
         
         # Choose category with highest expected value
         return max(expected_values.items(), key=lambda x: x[1])[0]
