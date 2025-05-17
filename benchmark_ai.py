@@ -25,7 +25,7 @@ class YahtzeeBenchmark:
         self.results: Dict[str, Dict[str, List[bool]]] = defaultdict(lambda: defaultdict(list))
         self.scores: Dict[str, List[int]] = defaultdict(list)
         self.turn_times: Dict[str, List[float]] = defaultdict(list)
-        self.benchmark_agents = ["random", "greedy1", "greedy2"]
+        self.benchmark_agents = ["random", "greedy1", "greedy2", "greedy3", "medium", "easy", "hard"]
         
         # Create output directory if it doesn't exist
         self.output_dir = "benchmark_results"
@@ -90,18 +90,14 @@ class YahtzeeBenchmark:
         turn_time = time.time() - start_time
         self.turn_times[ai.difficulty].append(turn_time)
     
-    def run_benchmark(self, num_games: int = 1000) -> Dict[str, Dict[str, float]]:
+    def run_benchmark(self, num_games: int = 100) -> Dict[str, Dict[str, float]]:
         """Run benchmark matches between AI agents."""
         logger.info(f"Starting benchmark with {num_games} games per matchup...")
         
-        # Test each agent against benchmark agents
-        test_agents = ["random", "greedy1", "greedy2", "greedy3", "medium", "easy"]
-        
-        for agent1 in test_agents:
+        # Use the same list of agents for both players
+        for agent1 in self.benchmark_agents:
             for agent2 in self.benchmark_agents:
-                if agent1 == agent2:
-                    continue
-                    
+                # Include self-play matches
                 logger.info(f"\nTesting {agent1} vs {agent2}...")
                 for game in range(num_games):
                     # Create fresh AI instances for each game
@@ -113,7 +109,7 @@ class YahtzeeBenchmark:
                     won = winner == ai1
                     self.results[agent1][agent2].append(won)
                     
-                    if (game + 1) % 50 == 0:
+                    if (game + 1) % 10 == 0:
                         win_rate = sum(self.results[agent1][agent2]) / len(self.results[agent1][agent2])
                         logger.info(f"Progress: {game + 1}/{num_games} games. Current win rate: {win_rate:.2%}")
         
