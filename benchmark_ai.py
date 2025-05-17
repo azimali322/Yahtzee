@@ -90,7 +90,7 @@ class YahtzeeBenchmark:
         turn_time = time.time() - start_time
         self.turn_times[ai.difficulty].append(turn_time)
     
-    def run_benchmark(self, num_games: int = 100) -> Dict[str, Dict[str, float]]:
+    def run_benchmark(self, num_games: int = 10) -> Dict[str, Dict[str, float]]:
         """Run benchmark matches between AI agents."""
         logger.info(f"Starting benchmark with {num_games} games per matchup...")
         
@@ -304,5 +304,5 @@ class YahtzeeBenchmark:
 if __name__ == "__main__":
     # Run benchmark
     benchmark = YahtzeeBenchmark()
-    benchmark.run_benchmark(num_games=1000)
+    benchmark.run_benchmark(num_games=10)
     benchmark.print_results() 
