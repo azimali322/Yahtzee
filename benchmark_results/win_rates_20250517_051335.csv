@@ -1,0 +1,16 @@
+Agent,Opponent,Win Rate
+random,greedy1,0.016
+random,greedy2,0.001
+greedy1,random,0.975
+greedy1,greedy2,0.216
+greedy2,random,1.0
+greedy2,greedy1,0.82
+greedy3,random,1.0
+greedy3,greedy1,0.908
+greedy3,greedy2,0.675
+medium,random,1.0
+medium,greedy1,0.922
+medium,greedy2,0.744
+easy,random,0.992
+easy,greedy1,0.685
+easy,greedy2,0.4
