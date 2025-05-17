@@ -94,13 +94,36 @@ class YahtzeeBenchmark:
     
     def ask_print_after_benchmark(self) -> bool:
         """Ask user if they want to print results after benchmark completion."""
-        while True:
-            choice = input("\nWould you like to see the results now? (y/n, default is y): ").strip().lower()
-            if not choice or choice == 'y':
+        print("\nWould you like to see the results now? (y/n, default is y): ", end='', flush=True)
+        
+        # Store original terminal settings
+        old_settings = termios.tcgetattr(sys.stdin)
+        try:
+            # Set terminal to raw mode
+            tty.setraw(sys.stdin.fileno())
+            
+            # Wait for input with timeout
+            if select.select([sys.stdin], [], [], 30.0)[0]:  # 30 second timeout
+                # Read the input
+                choice = sys.stdin.read(1).strip().lower()
+                # Print newline after input
+                print()
+                if choice == 'n':
+                    return False
+            else:
+                # If no input received within timeout
+                print("\nNo input received within 30 seconds. Showing results...")
                 return True
-            if choice == 'n':
-                return False
-            print("Please enter 'y' or 'n'")
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error getting user input: {str(e)}")
+            return True
+            
+        finally:
+            # Always restore terminal settings
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
     
     def ask_keep_partial_results(self) -> bool:
         """Ask user if they want to keep partial results after early stopping."""
