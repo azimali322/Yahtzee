@@ -5,9 +5,16 @@ from game_logic import (
     SMALL_STRAIGHT, LARGE_STRAIGHT, YAHTZEE, CHANCE
 )
 from collections import Counter
+from itertools import combinations_with_replacement
+import math
 
 class YahtzeeAI:
     """AI agent for playing Yahtzee using heuristic strategies."""
+    
+    # Add class constants for probabilities
+    UPPER_SECTION = [ONES, TWOS, THREES, FOURS, FIVES, SIXES]
+    LOWER_SECTION = [THREE_OF_A_KIND, FOUR_OF_A_KIND, FULL_HOUSE, 
+                    SMALL_STRAIGHT, LARGE_STRAIGHT, YAHTZEE, CHANCE]
     
     def __init__(self, difficulty="medium"):
         """Initialize the AI agent with a difficulty level."""
@@ -165,17 +172,158 @@ class YahtzeeAI:
         # Default to highest scoring category
         return max(scores.items(), key=lambda x: x[1])[0]
     
+    def _calculate_probability_of_value(self, target_count, current_count, dice_to_roll):
+        """Calculate probability of getting exactly target_count of a value after rerolling."""
+        if target_count < current_count:
+            return 0.0  # Can't decrease count through rerolls
+        
+        needed = target_count - current_count
+        if needed > dice_to_roll:
+            return 0.0  # Need more dice than available to roll
+        
+        # Probability of rolling the specific value on one die
+        p_success = 1/6
+        
+        # Use binomial probability formula
+        ways = math.comb(dice_to_roll, needed)
+        prob = ways * (p_success ** needed) * ((1 - p_success) ** (dice_to_roll - needed))
+        return prob
+
+    def _calculate_straight_probability(self, current_values, dice_to_roll, straight_length):
+        """Calculate probability of completing a straight of given length."""
+        current_unique = sorted(set(current_values))
+        max_sequence = len(self._find_longest_sequence(current_unique))
+        needed_unique = straight_length - max_sequence
+        
+        if needed_unique > dice_to_roll:
+            return 0.0  # Need more dice than available
+        
+        # Calculate probability based on needed unique values and available dice
+        if straight_length == 4:  # Small straight
+            if max_sequence == 3:
+                return 0.5  # Need one specific value out of two possibilities
+            elif max_sequence == 2:
+                return 0.3  # Need two specific values with some flexibility
+        else:  # Large straight
+            if max_sequence == 4:
+                return 1/3  # Need one specific value
+            elif max_sequence == 3:
+                return 0.1  # Need two specific values in order
+        
+        return 0.0  # Very unlikely to complete from scratch
+
+    def _calculate_expected_value(self, category, current_values, remaining_rolls):
+        """Calculate expected value for a category considering possible rerolls."""
+        if remaining_rolls == 0:
+            return self.scoresheet.get_potential_score(category, current_values)
+        
+        current_score = self.scoresheet.get_potential_score(category, current_values)
+        counter = Counter(current_values)
+        
+        # Upper section expected values
+        if category in self.UPPER_SECTION:
+            target_value = int(category[-1])  # Extract number from category name
+            current_count = counter[target_value]
+            max_possible = current_count * target_value
+            
+            # Calculate probability of improving through rerolls
+            for additional in range(1, 6 - current_count):
+                prob = self._calculate_probability_of_value(current_count + additional, 
+                                                         current_count, 
+                                                         5 - current_count)
+                max_possible += prob * ((current_count + additional) * target_value)
+            
+            return max_possible
+        
+        # Lower section expected values
+        if category == YAHTZEE:
+            if current_score == 50:  # Already have Yahtzee
+                return 50
+            most_common = counter.most_common(1)[0][1]
+            prob = self._calculate_probability_of_value(5, most_common, 5 - most_common)
+            return 50 * prob
+            
+        elif category in [THREE_OF_A_KIND, FOUR_OF_A_KIND]:
+            target_count = 3 if category == THREE_OF_A_KIND else 4
+            most_common = counter.most_common(1)[0][1]
+            if most_common >= target_count:
+                return sum(current_values)
+            
+            prob = self._calculate_probability_of_value(target_count, 
+                                                     most_common, 
+                                                     5 - most_common)
+            return prob * sum(current_values)
+            
+        elif category == FULL_HOUSE:
+            if len(counter) == 2 and 2 in counter.values() and 3 in counter.values():
+                return 25
+            # Calculate probability of completing full house from current state
+            prob = 0.1 if len(counter) == 2 else 0.05  # Simplified probability
+            return 25 * prob
+            
+        elif category in [SMALL_STRAIGHT, LARGE_STRAIGHT]:
+            score = 30 if category == SMALL_STRAIGHT else 40
+            prob = self._calculate_straight_probability(current_values, 
+                                                     remaining_rolls * 5,
+                                                     4 if category == SMALL_STRAIGHT else 5)
+            return score * prob
+            
+        elif category == CHANCE:
+            # For chance, consider average roll value (3.5) for rerollable dice
+            current_sum = sum(current_values)
+            rerollable = min(2, remaining_rolls) * 5  # Max 2 rerolls
+            return current_sum + (rerollable * 3.5)
+        
+        return 0
+
     def _choose_category_hard(self, dice_values):
         """
         Advanced strategy: Uses expected value calculations and game state analysis.
         Considers optimal long-term strategy.
         """
-        # TODO: Implement advanced category selection considering:
-        # 1. Expected value of remaining rolls
-        # 2. Probability of achieving better scores in other categories
-        # 3. Game state optimization
-        # 4. Upper section bonus strategy
-        pass
+        available_categories = self.scoresheet.get_available_categories()
+        if not available_categories:
+            return None
+            
+        # Calculate expected values for each available category
+        expected_values = {}
+        for category in available_categories:
+            base_value = self._calculate_expected_value(category, dice_values, 0)
+            
+            # Apply strategic weights
+            weight = 1.0
+            
+            # Prioritize upper section if bonus is achievable
+            if category in self.UPPER_SECTION:
+                upper_total = sum(self.scoresheet.scores.get(cat, 0) or 0 
+                                for cat in self.UPPER_SECTION 
+                                if self.scoresheet.scores.get(cat) is not None)
+                remaining_upper = sum(1 for cat in self.UPPER_SECTION 
+                                   if cat in available_categories)
+                
+                if upper_total < 63:  # Haven't secured bonus yet
+                    needed_per_remaining = (63 - upper_total) / max(1, remaining_upper)
+                    if base_value >= needed_per_remaining:
+                        weight = 1.2  # Boost weight if this helps achieve bonus
+            
+            # Prioritize Yahtzee if we already have one (for Yahtzee bonus)
+            elif category == YAHTZEE and self.scoresheet.scores.get(YAHTZEE) == 50:
+                weight = 1.3
+            
+            # Consider game progression
+            total_categories = 13
+            filled_categories = total_categories - len(available_categories)
+            game_progress = filled_categories / total_categories
+            
+            # Late game: prefer reliable scores
+            if game_progress > 0.7:
+                if category in [CHANCE, THREE_OF_A_KIND]:
+                    weight = 1.1
+            
+            expected_values[category] = base_value * weight
+        
+        # Choose category with highest expected value
+        return max(expected_values.items(), key=lambda x: x[1])[0]
     
     def _find_longest_sequence(self, sorted_vals):
         """Helper function to find the longest sequence in sorted dice values."""
