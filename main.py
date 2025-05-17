@@ -95,7 +95,7 @@ def play_turn(player_name, dice, scoresheet):
                 if indices_to_toggle: # Player specified dice to toggle, now confirm
                     # --- Confirmation Sub-Loop --- 
                     while True:
-                        print("\nPreview of changes to held dice:")
+                        print("\nPreview of proposed hold status:")
                         current_holds_status = [d.is_held for d in dice.dice]
                         proposed_holds_status = list(current_holds_status) # Create a mutable copy
                         
@@ -104,14 +104,10 @@ def play_turn(player_name, dice, scoresheet):
                             proposed_holds_status[index_to_toggle_preview] = not proposed_holds_status[index_to_toggle_preview]
 
                         for i in range(len(dice.dice)):
-                            original_status_text = "Held" if current_holds_status[i] else "Not Held"
                             proposed_status_text = "Held" if proposed_holds_status[i] else "Not Held"
-                            change_indicator = ""
-                            if current_holds_status[i] != proposed_holds_status[i]:
-                                change_indicator = f" (will change from {original_status_text} to {proposed_status_text})"
-                            print(f"  Die {i+1} ({dice.dice[i].value}): Current: {original_status_text}{change_indicator}")
+                            print(f"  Die {i+1} ({dice.dice[i].value}): {proposed_status_text}")
                         
-                        confirm_choice = get_player_input("Confirm these changes? (y/n): ", allowed_values=['y', 'n'])
+                        confirm_choice = get_player_input("Confirm this hold selection? (y/n): ", allowed_values=['y', 'n'])
                         if confirm_choice == 'y':
                             for index_to_apply_toggle in indices_to_toggle: # Apply confirmed changes
                                 dice.toggle_hold(index_to_apply_toggle)
