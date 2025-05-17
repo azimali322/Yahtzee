@@ -493,12 +493,19 @@ class YahtzeeAI:
         """
         logger.info(f"\nGreedy AI choosing category for dice values: {dice_values}")
         available_categories = self.scoresheet.get_available_categories()
-        scores = {cat: self.scoresheet.get_potential_score(cat, dice_values) 
-                 for cat in available_categories}
+        scores = {}
         
-        # Log all possible scores
-        for cat, score in scores.items():
+        # Calculate scores for each available category
+        for cat in available_categories:
+            score = self.scoresheet.get_potential_score(cat, dice_values)
+            scores[cat] = score
             logger.debug(f"Category {cat}: {score} points")
+        
+        # Special handling for Three of a Kind vs Four of a Kind
+        if THREE_OF_A_KIND in scores and FOUR_OF_A_KIND in scores:
+            # If the scores are equal, prefer Four of a Kind
+            if scores[THREE_OF_A_KIND] == scores[FOUR_OF_A_KIND]:
+                scores[THREE_OF_A_KIND] = 0  # Effectively remove Three of a Kind from consideration
         
         best_category = max(scores.items(), key=lambda x: x[1])
         logger.info(f"Chose category {best_category[0]} with score {best_category[1]}")
