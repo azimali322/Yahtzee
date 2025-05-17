@@ -127,16 +127,343 @@ class YahtzeeAI:
     
     def _decide_reroll_hard(self, current_dice_values, roll_number):
         """
-        Advanced strategy: Consider all possible scoring combinations and probability.
-        Implements optimal strategy based on expected value calculations.
+        Advanced strategy: Uses multi-turn look-ahead and sophisticated optimization.
+        Implements optimal strategy based on game state analysis and future potential.
         """
-        # TODO: Implement advanced strategy considering:
-        # 1. Probability of improving current hand
-        # 2. Available categories and their potential scores
-        # 3. Game state (e.g., upper section bonus possibility)
-        # 4. Expected value of different combinations
-        pass
+        logger.info(f"\nHard AI deciding reroll for {current_dice_values} (roll {roll_number})")
+        
+        if roll_number >= 3:
+            return []
+            
+        # Get current game state analysis
+        game_state = self._analyze_game_state()
+        
+        # Calculate best reroll strategy considering future turns
+        best_reroll = self._calculate_optimal_reroll(
+            current_dice_values, 
+            roll_number,
+            game_state
+        )
+        
+        return best_reroll
     
+    def _analyze_game_state(self):
+        """Analyze current game state for strategic decision making."""
+        available_categories = self.scoresheet.get_available_categories()
+        filled_categories = set(cat for cat in self.UPPER_SECTION + self.LOWER_SECTION 
+                              if cat not in available_categories)
+        
+        # Calculate upper section status
+        upper_total = sum(self.scoresheet.scores.get(cat, 0) or 0 
+                         for cat in self.UPPER_SECTION)
+        remaining_upper = [cat for cat in self.UPPER_SECTION 
+                         if cat in available_categories]
+        
+        # Calculate optimal upper section targets
+        needed_for_bonus = max(0, 63 - upper_total)
+        avg_needed_per_remaining = (needed_for_bonus / len(remaining_upper)) if remaining_upper else 0
+        
+        # Analyze Yahtzee potential
+        has_yahtzee = self.scoresheet.scores.get(YAHTZEE) == 50
+        can_bonus_yahtzee = has_yahtzee and YAHTZEE in available_categories
+        
+        return {
+            'available_categories': available_categories,
+            'filled_categories': filled_categories,
+            'upper_total': upper_total,
+            'remaining_upper': remaining_upper,
+            'needed_for_bonus': needed_for_bonus,
+            'avg_needed_per_remaining': avg_needed_per_remaining,
+            'has_yahtzee': has_yahtzee,
+            'can_bonus_yahtzee': can_bonus_yahtzee,
+            'turns_remaining': len(available_categories),
+            'game_progress': 1 - (len(available_categories) / 13)
+        }
+    
+    def _calculate_optimal_reroll(self, current_values, roll_number, game_state):
+        """Calculate optimal reroll strategy using multi-turn look-ahead."""
+        best_score = -1
+        best_reroll = []
+        
+        # Get current dice analysis
+        dice_analysis = self._analyze_dice_values(current_values)
+        
+        # Early game strategy (first 5 turns)
+        if game_state['game_progress'] < 0.4:
+            best_reroll = self._early_game_strategy(
+                current_values, roll_number, game_state, dice_analysis
+            )
+            if best_reroll is not None:
+                return best_reroll
+        
+        # Mid game strategy (turns 6-10)
+        elif game_state['game_progress'] < 0.8:
+            best_reroll = self._mid_game_strategy(
+                current_values, roll_number, game_state, dice_analysis
+            )
+            if best_reroll is not None:
+                return best_reroll
+        
+        # Late game strategy (last 3 turns)
+        else:
+            best_reroll = self._late_game_strategy(
+                current_values, roll_number, game_state, dice_analysis
+            )
+            if best_reroll is not None:
+                return best_reroll
+        
+        # If no specific strategy was chosen, use complete enumeration
+        return self._complete_enumeration_strategy(
+            current_values, roll_number, game_state, dice_analysis
+        )
+    
+    def _analyze_dice_values(self, dice_values):
+        """Detailed analysis of current dice values."""
+        counter = Counter(dice_values)
+        sorted_vals = sorted(dice_values)
+        sequence = self._find_longest_sequence(sorted_vals)
+        
+        return {
+            'counts': counter,
+            'max_count': max(counter.values()),
+            'unique_values': len(counter),
+            'sequence_length': len(sequence),
+            'sequence': sequence,
+            'sum': sum(dice_values),
+            'has_pair': any(count >= 2 for count in counter.values()),
+            'has_three': any(count >= 3 for count in counter.values()),
+            'has_four': any(count >= 4 for count in counter.values()),
+            'most_common': counter.most_common(),
+            'potential_straight': len(set(range(min(dice_values), max(dice_values) + 1))) >= 4
+        }
+    
+    def _early_game_strategy(self, current_values, roll_number, game_state, dice_analysis):
+        """
+        Early game strategy focusing on:
+        1. Securing upper section bonus
+        2. Setting up for Yahtzee opportunities
+        3. Keeping high-scoring combinations
+        """
+        # Prioritize upper section bonus
+        if game_state['needed_for_bonus'] > 0:
+            high_value_counts = {
+                val: count for val, count in dice_analysis['counts'].items()
+                if val >= 4 and count >= 2
+            }
+            if high_value_counts:
+                highest_val = max(high_value_counts.keys())
+                return [i for i, val in enumerate(current_values) 
+                       if val != highest_val]
+        
+        # Look for potential Yahtzee
+        if dice_analysis['max_count'] >= 3 and roll_number < 3:
+            most_common_val = dice_analysis['most_common'][0][0]
+            return [i for i, val in enumerate(current_values) 
+                   if val != most_common_val]
+        
+        # Look for potential straight
+        if dice_analysis['sequence_length'] >= 3 and roll_number < 3:
+            return [i for i, val in enumerate(current_values) 
+                   if val not in dice_analysis['sequence']]
+        
+        return None
+    
+    def _mid_game_strategy(self, current_values, roll_number, game_state, dice_analysis):
+        """
+        Mid game strategy focusing on:
+        1. Completing high-scoring combinations
+        2. Maximizing category synergies
+        3. Maintaining upper section bonus pace
+        """
+        # Try to complete Yahtzee if close
+        if dice_analysis['max_count'] == 4:
+            most_common_val = dice_analysis['most_common'][0][0]
+            return [i for i, val in enumerate(current_values) 
+                   if val != most_common_val]
+        
+        # Try to complete Large Straight if close
+        if dice_analysis['sequence_length'] == 4 and LARGE_STRAIGHT in game_state['available_categories']:
+            return [i for i, val in enumerate(current_values) 
+                   if val not in dice_analysis['sequence']]
+        
+        # Try to complete Full House if have three of a kind
+        if (dice_analysis['has_three'] and not dice_analysis['has_pair'] 
+            and FULL_HOUSE in game_state['available_categories']):
+            three_val = next(val for val, count in dice_analysis['counts'].items() 
+                           if count >= 3)
+            return [i for i, val in enumerate(current_values) 
+                   if val != three_val and dice_analysis['counts'][val] == 1]
+        
+        return None
+    
+    def _late_game_strategy(self, current_values, roll_number, game_state, dice_analysis):
+        """
+        Late game strategy focusing on:
+        1. Maximizing remaining category scores
+        2. Securing upper section bonus if close
+        3. Taking guaranteed points over risky plays
+        """
+        # If we need specific upper section values, focus on those
+        if game_state['needed_for_bonus'] <= 15 and game_state['remaining_upper']:
+            needed_sections = [int(cat[-1]) for cat in game_state['remaining_upper']]
+            for val in needed_sections:
+                if dice_analysis['counts'][val] >= 2:
+                    return [i for i, d in enumerate(current_values) 
+                           if d != val]
+        
+        # Take guaranteed points if available
+        if dice_analysis['max_count'] >= 3:
+            most_common_val = dice_analysis['most_common'][0][0]
+            if THREE_OF_A_KIND in game_state['available_categories']:
+                return [i for i, val in enumerate(current_values) 
+                       if val != most_common_val]
+        
+        return None
+    
+    def _complete_enumeration_strategy(self, current_values, roll_number, game_state, dice_analysis):
+        """Fallback to complete enumeration with strategic weighting."""
+        best_score = -1
+        best_reroll = []
+        
+        # Try all possible combinations of dice to keep
+        for keep_count in range(6):
+            for keep_indices in itertools.combinations(range(5), keep_count):
+                # Calculate base expected score
+                expected_score = self._calculate_expected_score_for_reroll(
+                    keep_indices, current_values
+                )
+                
+                # Apply strategic weights
+                final_score = self._apply_strategic_weights(
+                    expected_score,
+                    keep_indices,
+                    current_values,
+                    game_state,
+                    dice_analysis
+                )
+                
+                if final_score > best_score:
+                    best_score = final_score
+                    best_reroll = [i for i in range(5) if i not in keep_indices]
+        
+        return best_reroll
+    
+    def _apply_strategic_weights(self, base_score, keep_indices, current_values, 
+                               game_state, dice_analysis):
+        """Apply strategic weights to the expected score based on game state."""
+        score = base_score
+        kept_values = [current_values[i] for i in keep_indices]
+        kept_analysis = self._analyze_dice_values(kept_values)
+        
+        # Weight based on upper section bonus potential
+        if game_state['needed_for_bonus'] > 0:
+            upper_potential = sum(
+                val * count for val, count in kept_analysis['counts'].items()
+                if f"_{val}" in game_state['remaining_upper']
+            )
+            if upper_potential >= game_state['avg_needed_per_remaining']:
+                score *= 1.2
+        
+        # Weight based on Yahtzee potential
+        if kept_analysis['max_count'] >= 3:
+            if game_state['has_yahtzee']:  # Going for bonus Yahtzee
+                score *= 1.3
+            elif YAHTZEE in game_state['available_categories']:
+                score *= 1.2
+        
+        # Weight based on straight potential
+        if kept_analysis['sequence_length'] >= 3:
+            if LARGE_STRAIGHT in game_state['available_categories']:
+                score *= 1.15
+            elif SMALL_STRAIGHT in game_state['available_categories']:
+                score *= 1.1
+        
+        # Late game adjustment
+        if game_state['game_progress'] > 0.8:
+            score *= (1 + 0.1 * kept_analysis['max_count'])  # Prefer keeping more dice
+        
+        return score
+
+    def _choose_category_hard(self, dice_values):
+        """
+        Advanced category selection strategy that considers:
+        1. Game state (early, mid, late game)
+        2. Upper section bonus potential
+        3. Yahtzee opportunities
+        4. Strategic category selection
+        5. Future turn implications
+        """
+        game_state = self._analyze_game_state()
+        dice_analysis = self._analyze_dice_values(dice_values)
+        available_categories = game_state['available_categories']
+        
+        # Calculate base scores for all available categories
+        scores = {cat: self.scoresheet.get_potential_score(cat, dice_values) 
+                 for cat in available_categories}
+        
+        # Apply strategic weights to each category
+        weighted_scores = {}
+        for category, base_score in scores.items():
+            weight = 1.0  # Base weight
+            
+            # Handle Yahtzee opportunities
+            if category == YAHTZEE:
+                if base_score == 50:  # We have a Yahtzee
+                    weight = 1.5  # Strongly prefer taking Yahtzee when available
+                elif game_state['has_yahtzee']:  # Potential bonus Yahtzee
+                    weight = 1.3
+            
+            # Upper section bonus consideration
+            if category in self.UPPER_SECTION:
+                value = int(category.split('_')[1])  # Extract the number value
+                needed_avg = game_state['avg_needed_per_remaining']
+                
+                if base_score >= needed_avg:  # Good score for upper section
+                    if game_state['needed_for_bonus'] > 0:  # Still need bonus
+                        weight = 1.3
+                    elif base_score >= value * 3:  # Exceptionally good score
+                        weight = 1.2
+                elif game_state['game_progress'] > 0.8 and game_state['needed_for_bonus'] <= 8:
+                    # Late game, close to bonus
+                    weight = 1.4
+            
+            # Handle special scoring categories
+            if category in [SMALL_STRAIGHT, LARGE_STRAIGHT, FULL_HOUSE]:
+                if base_score == self.scoresheet.category_max_scores[category]:
+                    # Maximum score for these categories
+                    weight = 1.2 if game_state['game_progress'] < 0.5 else 1.4
+            
+            # Adjust for Three/Four of a Kind
+            if category in [THREE_OF_A_KIND, FOUR_OF_A_KIND]:
+                if base_score >= 20:  # Good score
+                    weight = 1.1
+                    if category == FOUR_OF_A_KIND and YAHTZEE in available_categories:
+                        weight = 0.9  # Slightly discourage if Yahtzee still available
+            
+            # Late game adjustments
+            if game_state['game_progress'] > 0.8:
+                if base_score == 0:  # Avoid zeros late game if possible
+                    weight = 0.7
+                elif base_score > self.scoresheet.category_max_scores[category] * 0.7:
+                    # Prefer high percentage scores late game
+                    weight = 1.2
+            
+            # Early game adjustments
+            elif game_state['game_progress'] < 0.3:
+                if category == CHANCE:  # Save chance for later
+                    weight = 0.8
+                elif base_score == 0:  # More acceptable to take zeros early
+                    weight = 0.9
+            
+            weighted_scores[category] = base_score * weight
+        
+        # Choose the category with the highest weighted score
+        best_category = max(weighted_scores.items(), key=lambda x: x[1])[0]
+        logger.info(f"\nHard AI choosing category for dice values: {dice_values}")
+        logger.info(f"Chose category {best_category} with weighted score {weighted_scores[best_category]:.2f}")
+        
+        return best_category
+
     def _choose_category_easy(self, dice_values):
         """Simple strategy: Choose the highest scoring available category."""
         available_categories = self.scoresheet.get_available_categories()
