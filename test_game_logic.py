@@ -1,5 +1,8 @@
 import unittest
-from game_logic import ScoreSheet, Dice # Assuming Dice might be needed for integration tests later, or for getting values
+import io # Added for suppressing print output
+from contextlib import redirect_stdout # Added for suppressing print output
+from unittest.mock import patch # Added for mocking random.randint
+from game_logic import ScoreSheet, Die, Dice # Added Die
 from game_logic import ONES, TWOS, THREES, FOURS, FIVES, SIXES, THREE_OF_A_KIND, FOUR_OF_A_KIND, FULL_HOUSE, SMALL_STRAIGHT, LARGE_STRAIGHT, YAHTZEE, CHANCE
 
 class TestScoreSheetCalculations(unittest.TestCase):
@@ -12,6 +15,22 @@ class TestScoreSheetCalculations(unittest.TestCase):
     def test_score_ones_basic(self):
         self.assertEqual(self.sheet.get_potential_score(ONES, [1, 1, 2, 3, 1]), 3, "Score for Ones should be sum of ones")
         self.assertEqual(self.sheet.get_potential_score(ONES, [2, 3, 4, 5, 6]), 0, "Score for Ones should be 0 if no ones")
+
+    def test_score_twos_basic(self):
+        self.assertEqual(self.sheet.get_potential_score(TWOS, [2, 2, 1, 3, 2]), 6, "Score for Twos should be sum of twos")
+        self.assertEqual(self.sheet.get_potential_score(TWOS, [1, 3, 4, 5, 6]), 0, "Score for Twos should be 0 if no twos")
+
+    def test_score_threes_basic(self):
+        self.assertEqual(self.sheet.get_potential_score(THREES, [3, 3, 1, 3, 2]), 9, "Score for Threes should be sum of threes")
+        self.assertEqual(self.sheet.get_potential_score(THREES, [1, 2, 4, 5, 6]), 0, "Score for Threes should be 0 if no threes")
+
+    def test_score_fours_basic(self):
+        self.assertEqual(self.sheet.get_potential_score(FOURS, [4, 4, 1, 3, 4]), 12, "Score for Fours should be sum of fours")
+        self.assertEqual(self.sheet.get_potential_score(FOURS, [1, 2, 3, 5, 6]), 0, "Score for Fours should be 0 if no fours")
+
+    def test_score_fives_basic(self):
+        self.assertEqual(self.sheet.get_potential_score(FIVES, [5, 5, 1, 3, 5]), 15, "Score for Fives should be sum of fives")
+        self.assertEqual(self.sheet.get_potential_score(FIVES, [1, 2, 3, 4, 6]), 0, "Score for Fives should be 0 if no fives")
 
     def test_score_sixes_basic(self):
         self.assertEqual(self.sheet.get_potential_score(SIXES, [6, 6, 2, 3, 6]), 18, "Score for Sixes should be sum of sixes")
@@ -35,26 +54,36 @@ class TestScoreSheetCalculations(unittest.TestCase):
         self.assertEqual(self.sheet.get_potential_score(THREE_OF_A_KIND, [2, 2, 4, 4, 5]), 0, "Less than 3 of a kind should score 0")
         self.assertEqual(self.sheet.get_potential_score(THREE_OF_A_KIND, [4, 4, 4, 4, 5]), 21, "4 of a kind also counts for 3 of a kind") # 4+4+4+4+5 = 21
         self.assertEqual(self.sheet.get_potential_score(THREE_OF_A_KIND, [6, 6, 6, 6, 6]), 30, "Yahtzee also counts for 3 of a kind")
+        self.assertEqual(self.sheet.get_potential_score(THREE_OF_A_KIND, [1, 2, 3, 4, 5]), 0, "Straight is not 3 of a kind")
 
     def test_score_four_of_a_kind(self):
         self.assertEqual(self.sheet.get_potential_score(FOUR_OF_A_KIND, [4, 4, 4, 4, 5]), 21, "4 of a kind should sum all dice") # 4+4+4+4+5 = 21
         self.assertEqual(self.sheet.get_potential_score(FOUR_OF_A_KIND, [3, 3, 3, 4, 5]), 0, "Less than 4 of a kind should score 0")
         self.assertEqual(self.sheet.get_potential_score(FOUR_OF_A_KIND, [6, 6, 6, 6, 6]), 30, "Yahtzee also counts for 4 of a kind")
+        self.assertEqual(self.sheet.get_potential_score(FOUR_OF_A_KIND, [1, 2, 3, 4, 5]), 0, "Straight is not 4 of a kind")
 
     def test_score_full_house(self):
         self.assertEqual(self.sheet.get_potential_score(FULL_HOUSE, [2, 2, 3, 3, 3]), 25, "Full House should score 25")
         self.assertEqual(self.sheet.get_potential_score(FULL_HOUSE, [5, 5, 5, 2, 2]), 25, "Full House (reversed) should score 25")
+        self.assertEqual(self.sheet.get_potential_score(FULL_HOUSE, [1, 1, 6, 6, 6]), 25, "Full House with 1s and 6s")
         self.assertEqual(self.sheet.get_potential_score(FULL_HOUSE, [2, 2, 3, 4, 5]), 0, "Not a Full House should score 0")
         self.assertEqual(self.sheet.get_potential_score(FULL_HOUSE, [2, 2, 2, 2, 3]), 0, "Four of a kind is not a Full House by this rule")
         self.assertEqual(self.sheet.get_potential_score(FULL_HOUSE, [3, 3, 3, 3, 3]), 0, "Yahtzee is not a Full House by this specific rule (player can choose though)")
         # Note: A Yahtzee can be *scored* as a Full House if player chooses, but _calculate_full_house is specific.
+        self.assertEqual(self.sheet.get_potential_score(FULL_HOUSE, [4, 4, 4, 1, 1]), 25, "Full House different values")
 
     def test_score_small_straight(self):
         self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [1, 2, 3, 4, 6]), 30, "Sequence of 4 (1234) is Small Straight")
         self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [6, 2, 3, 4, 5]), 30, "Sequence of 4 (2345) is Small Straight (unordered)")
+        self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [1, 3, 4, 5, 6]), 30, "Sequence of 4 (3456) is Small Straight (unordered)")
         self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [1, 1, 2, 3, 4]), 30, "Sequence of 4 (1234) with duplicate is Small Straight")
         self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [1, 2, 2, 3, 4]), 30, "Sequence of 4 (1234) with internal duplicate is Small Straight")
+        self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [1, 2, 3, 3, 4]), 30, "Sequence of 4 (1234) with duplicate 3")
+        self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [1, 2, 3, 4, 4]), 30, "Sequence of 4 (1234) with duplicate 4")
         self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [1, 2, 3, 5, 6]), 0, "Not a sequence of 4")
+        self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [1, 2, 4, 5, 6]), 0, "No seq of 4 (x,2,4,5,6)")
+        self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [1, 2, 3, 3, 3]), 0, "Three of a kind, not straight")
+        self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [1, 1, 1, 2, 3]), 0, "Not enough unique for small straight")
         self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [1, 2, 3, 4, 5]), 30, "Large Straight also contains a Small Straight") # Our specific rule gives 30
 
     def test_score_large_straight(self):
@@ -62,64 +91,220 @@ class TestScoreSheetCalculations(unittest.TestCase):
         self.assertEqual(self.sheet.get_potential_score(LARGE_STRAIGHT, [6, 2, 3, 4, 5]), 40, "Sequence of 5 (23456) is Large Straight (unordered)")
         self.assertEqual(self.sheet.get_potential_score(LARGE_STRAIGHT, [1, 1, 2, 3, 4]), 0, "Not a sequence of 5 (Small Straight)")
         self.assertEqual(self.sheet.get_potential_score(LARGE_STRAIGHT, [1, 2, 3, 4, 6]), 0, "Not a sequence of 5")
+        self.assertEqual(self.sheet.get_potential_score(LARGE_STRAIGHT, [1, 2, 3, 4, 4]), 0, "Not a sequence of 5 (Small Straight)")
 
     # --- Test Bonuses --- 
     def test_upper_section_bonus(self):
-        self.sheet.record_score(ONES, [1, 1, 1, 1, 1])    # 5
-        self.sheet.record_score(TWOS, [2, 2, 2, 1, 1])    # 6
-        self.sheet.record_score(THREES, [3, 3, 3, 1, 1])  # 9
-        self.sheet.record_score(FOURS, [4, 4, 4, 1, 1])   # 12
-        self.sheet.record_score(FIVES, [5, 5, 5, 1, 1])   # 15
-        # Subtotal = 5+6+9+12+15 = 47. No bonus yet.
+        with io.StringIO() as buf, redirect_stdout(buf): # Suppress prints
+            self.sheet.record_score(ONES, [1, 1, 1, 1, 1])    # 5
+            self.sheet.record_score(TWOS, [2, 2, 2, 1, 1])    # 6
+            self.sheet.record_score(THREES, [3, 3, 3, 1, 1])  # 9
+            self.sheet.record_score(FOURS, [4, 4, 4, 1, 1])   # 12
+            self.sheet.record_score(FIVES, [5, 5, 5, 1, 1])   # 15
         self.assertEqual(self.sheet.get_upper_section_bonus(), 0, "Bonus should be 0 if subtotal < 63")
         
-        self.sheet.record_score(SIXES, [6, 6, 6, 1, 1])   # 18. Subtotal = 47 + 18 = 65.
+        with io.StringIO() as buf, redirect_stdout(buf): # Suppress prints
+            self.sheet.record_score(SIXES, [6, 6, 6, 1, 1])   # 18. Subtotal = 47 + 18 = 65.
         self.assertEqual(self.sheet.get_upper_section_bonus(), 35, "Bonus should be 35 if subtotal >= 63")
 
     def test_yahtzee_bonus(self):
-        # First Yahtzee scored in Yahtzee box
-        self.sheet.record_score(YAHTZEE, [5, 5, 5, 5, 5]) # Scores 50, no bonus yet from this action itself
+        with io.StringIO() as buf, redirect_stdout(buf): # Suppress prints
+            self.sheet.record_score(YAHTZEE, [5, 5, 5, 5, 5]) 
         self.assertEqual(self.sheet.scores[YAHTZEE], 50)
         self.assertEqual(self.sheet.yahtzee_bonus_score, 0, "No Yahtzee bonus on first Yahtzee score")
 
-        # Second Yahtzee, scored elsewhere (e.g., Fives)
-        self.sheet.record_score(FIVES, [5, 5, 5, 5, 5]) # Scores 25 for Fives, should add 100 bonus
+        with io.StringIO() as buf, redirect_stdout(buf): # Suppress prints
+            self.sheet.record_score(FIVES, [5, 5, 5, 5, 5]) 
         self.assertEqual(self.sheet.scores[FIVES], 25)
         self.assertEqual(self.sheet.yahtzee_bonus_score, 100, "100 point Yahtzee bonus for second Yahtzee scored elsewhere")
 
-        # Third Yahtzee, scored as Chance
-        self.sheet.record_score(CHANCE, [2, 2, 2, 2, 2]) # Scores 10 for Chance, should add another 100 bonus
+        with io.StringIO() as buf, redirect_stdout(buf): # Suppress prints
+            self.sheet.record_score(CHANCE, [2, 2, 2, 2, 2]) 
         self.assertEqual(self.sheet.scores[CHANCE], 10)
         self.assertEqual(self.sheet.yahtzee_bonus_score, 200, "Additional 100 point Yahtzee bonus for third Yahtzee")
 
     def test_yahtzee_bonus_not_awarded_if_yahtzee_box_is_zero(self):
-        self.sheet.record_score(YAHTZEE, [1, 2, 3, 4, 5]) # Scored 0 in Yahtzee
+        with io.StringIO() as buf, redirect_stdout(buf): # Suppress prints
+            self.sheet.record_score(YAHTZEE, [1, 2, 3, 4, 5]) 
         self.assertEqual(self.sheet.scores[YAHTZEE], 0)
         
-        # Roll another Yahtzee
-        self.sheet.record_score(FIVES, [5, 5, 5, 5, 5]) # Score 25 for Fives
+        with io.StringIO() as buf, redirect_stdout(buf): # Suppress prints
+            self.sheet.record_score(FIVES, [5, 5, 5, 5, 5]) 
         self.assertEqual(self.sheet.yahtzee_bonus_score, 0, "No Yahtzee bonus if Yahtzee box scored 0")
 
     def test_yahtzee_bonus_not_awarded_if_yahtzee_box_not_scored_first(self):
-        # Score a Yahtzee (e.g. [5,5,5,5,5]) in FIVES first
-        self.sheet.record_score(FIVES, [5,5,5,5,5]) # Score 25
+        with io.StringIO() as buf, redirect_stdout(buf): # Suppress prints
+            self.sheet.record_score(FIVES, [5,5,5,5,5]) 
         self.assertEqual(self.sheet.yahtzee_bonus_score, 0, "No bonus if Yahtzee box isn't 50 yet")
 
-        # Then score the Yahtzee box with something else (or even a Yahtzee)
-        self.sheet.record_score(YAHTZEE, [1,1,1,1,1]) # Score 50
+        with io.StringIO() as buf, redirect_stdout(buf): # Suppress prints
+            self.sheet.record_score(YAHTZEE, [1,1,1,1,1]) 
         self.assertEqual(self.sheet.yahtzee_bonus_score, 0, "Still no bonus from past events, only future ones")
         
-        # Now a third Yahtzee roll, scored elsewhere
-        self.sheet.record_score(SIXES, [6,6,6,6,6]) # Score 30
+        with io.StringIO() as buf, redirect_stdout(buf): # Suppress prints
+            self.sheet.record_score(SIXES, [6,6,6,6,6]) 
         self.assertEqual(self.sheet.yahtzee_bonus_score, 100, "Bonus applies for Yahtzees after Yahtzee box is 50")
 
-    # Example of a test that might fail or need rule clarification for _calculate_small_straight
     def test_small_straight_edge_case_large_straight_is_also_small(self):
-        # Standard rules often state a Large Straight also fulfills Small Straight if chosen.
-        # My _calculate_small_straight specifically looks for sequences of 4. A LS has two such sequences.
-        # My current _calculate_small_straight returns 30 if any sequence of 4 is found.
-        self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [1, 2, 3, 4, 5]), 30, "Large Straight should qualify for Small Straight score")
-        self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [2, 3, 4, 5, 6]), 30, "Large Straight should qualify for Small Straight score")
+        self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [1, 2, 3, 4, 5]), 30)
+        self.assertEqual(self.sheet.get_potential_score(SMALL_STRAIGHT, [2, 3, 4, 5, 6]), 30)
+
+class TestDie(unittest.TestCase):
+    @patch('random.randint')
+    def test_die_initialization(self, mock_randint):
+        mock_randint.return_value = 4
+        die = Die()
+        self.assertEqual(die.value, 4)
+        self.assertFalse(die.is_held)
+        mock_randint.assert_called_once_with(1, 6)
+
+    @patch('random.randint')
+    def test_die_roll_not_held(self, mock_randint):
+        mock_randint.return_value = 3 # Initial roll
+        die = Die()
+        self.assertEqual(die.value, 3)
+
+        mock_randint.return_value = 5 # Subsequent roll
+        die.roll()
+        self.assertEqual(die.value, 5)
+        self.assertEqual(mock_randint.call_count, 2) # Called for __init__ and roll()
+
+    @patch('random.randint')
+    def test_die_roll_held(self, mock_randint):
+        mock_randint.return_value = 2
+        die = Die()
+        die.is_held = True
+        original_value = die.value # Should be 2
+        
+        mock_randint.return_value = 6 # Attempt to change value
+        die.roll()
+        self.assertEqual(die.value, original_value, "Held die value should not change on roll")
+        mock_randint.assert_called_once_with(1,6) # Only called during __init__
+
+    def test_die_str(self):
+        die = Die()
+        die.value = 5
+        self.assertEqual(str(die), "5")
+
+class TestDice(unittest.TestCase):
+    def setUp(self):
+        # It's often good to have a fixed starting point for dice values in tests
+        # We can patch random.randint for the Dice initialization too
+        pass
+
+    @patch('random.randint')
+    def test_dice_initialization(self, mock_randint):
+        # Make all dice initialize to a specific sequence for predictability if needed
+        # e.g. mock_randint.side_effect = [1, 2, 3, 4, 5]
+        mock_randint.return_value = 1 # All dice will be 1 initially
+        dice_set = Dice(num_dice=5)
+        self.assertEqual(len(dice_set.dice), 5)
+        self.assertTrue(all(d.value == 1 for d in dice_set.dice))
+        self.assertEqual(dice_set.roll_count, 0)
+
+    def test_get_values(self):
+        dice_set = Dice()
+        # Manually set values for deterministic testing if not using patch in setUp
+        for i, val in enumerate([1,2,3,4,5]):
+            dice_set.dice[i].value = val
+        self.assertEqual(dice_set.get_values(), [1,2,3,4,5])
+
+    @patch.object(Die, 'roll') # Patch Die.roll directly for these tests
+    def test_roll_all_not_held(self, mock_die_roll):
+        dice_set = Dice(num_dice=3)
+        for die in dice_set.dice:
+            die.is_held = False
+        
+        dice_set.roll_all()
+        self.assertEqual(mock_die_roll.call_count, 3, "Each unheld die should be rolled once")
+        self.assertEqual(dice_set.roll_count, 1)
+
+    @patch.object(Die, 'roll')
+    def test_roll_all_some_held(self, mock_die_roll):
+        dice_set = Dice(num_dice=5)
+        dice_set.dice[0].is_held = True
+        dice_set.dice[2].is_held = True
+        dice_set.dice[4].is_held = True
+        # Dice 1 and 3 (0-indexed) are not held
+
+        dice_set.roll_all()
+        self.assertEqual(mock_die_roll.call_count, 2, "Only unheld dice should be rolled")
+        self.assertEqual(dice_set.roll_count, 1)
+
+    @patch.object(Die, 'roll')
+    def test_roll_all_max_rolls(self, mock_die_roll):
+        dice_set = Dice(num_dice=2)
+        dice_set.roll_all() # Roll 1
+        dice_set.roll_all() # Roll 2
+        dice_set.roll_all() # Roll 3
+        self.assertEqual(dice_set.roll_count, 3)
+        mock_die_roll.reset_mock() # Reset call count for Die.roll
+        
+        # Attempt 4th roll
+        captured_output = ""
+        with io.StringIO() as buf, redirect_stdout(buf):
+            dice_set.roll_all()
+            captured_output = buf.getvalue() # Get value before block ends
+        self.assertEqual(mock_die_roll.call_count, 0, "No dice should roll after 3rd roll_all")
+        self.assertEqual(dice_set.roll_count, 3, "Roll count should remain 3")
+        self.assertIn("already rolled 3 times", captured_output)
+
+    @patch.object(Die, 'roll')
+    def test_roll_specific_dice(self, mock_die_roll):
+        dice_set = Dice(num_dice=5)
+        # Hold some dice to ensure roll_specific unholds them before rolling
+        dice_set.dice[0].is_held = True
+        dice_set.dice[1].is_held = True
+
+        dice_set.roll_specific([0, 2, 4]) # Roll dice at index 0, 2, 4
+        self.assertEqual(mock_die_roll.call_count, 3)
+        self.assertFalse(dice_set.dice[0].is_held, "Specified die 0 should be unheld after roll_specific")
+        self.assertTrue(dice_set.dice[1].is_held, "Unspecified held die 1 should remain held")
+        self.assertFalse(dice_set.dice[2].is_held, "Specified die 2 should be unheld")
+        self.assertEqual(dice_set.roll_count, 1)
+
+    @patch.object(Die, 'roll')
+    def test_roll_specific_max_rolls(self, mock_die_roll):
+        dice_set = Dice(num_dice=5)
+        dice_set.roll_specific([0])    # Roll 1
+        dice_set.roll_specific([1,2])  # Roll 2
+        dice_set.roll_specific([3,4])  # Roll 3
+        self.assertEqual(dice_set.roll_count, 3)
+        mock_die_roll.reset_mock()
+
+        captured_output = ""
+        with io.StringIO() as buf, redirect_stdout(buf):
+            dice_set.roll_specific([0]) # Attempt 4th roll
+            captured_output = buf.getvalue()
+        self.assertEqual(mock_die_roll.call_count, 0)
+        self.assertEqual(dice_set.roll_count, 3)
+        self.assertIn("already rolled 3 times", captured_output)
+
+    def test_toggle_hold(self):
+        dice_set = Dice(num_dice=3)
+        self.assertFalse(dice_set.dice[1].is_held)
+        dice_set.toggle_hold(1)
+        self.assertTrue(dice_set.dice[1].is_held)
+        dice_set.toggle_hold(1)
+        self.assertFalse(dice_set.dice[1].is_held)
+
+    def test_toggle_hold_invalid_index(self):
+        dice_set = Dice(num_dice=1)
+        captured_output = ""
+        with io.StringIO() as buf, redirect_stdout(buf):
+            dice_set.toggle_hold(5) # Invalid index
+            captured_output = buf.getvalue()
+        self.assertIn("Invalid die index 5 for holding", captured_output)
+
+    def test_reset_roll_count(self):
+        dice_set = Dice(num_dice=2)
+        dice_set.roll_all() # roll_count = 1
+        dice_set.dice[0].is_held = True
+        
+        dice_set.reset_roll_count()
+        self.assertEqual(dice_set.roll_count, 0)
+        self.assertFalse(dice_set.dice[0].is_held, "Dice should be unheld after reset")
+        self.assertFalse(dice_set.dice[1].is_held, "Dice should be unheld after reset")
 
 if __name__ == '__main__':
     unittest.main() 

@@ -26,7 +26,8 @@ class Dice:
         """Rolls all dice that are not held."""
         if self.roll_count < 3:
             for die in self.dice:
-                die.roll()
+                if not die.is_held:
+                    die.roll()
             self.roll_count += 1
         else:
             print("You have already rolled 3 times this turn.")
