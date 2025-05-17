@@ -23,6 +23,23 @@ class YahtzeeAI:
     LOWER_SECTION = [THREE_OF_A_KIND, FOUR_OF_A_KIND, FULL_HOUSE, 
                     SMALL_STRAIGHT, LARGE_STRAIGHT, YAHTZEE, CHANCE]
     
+    # Maximum possible scores for each category
+    CATEGORY_MAX_SCORES = {
+        ONES: 5,           # All ones (1×5)
+        TWOS: 10,         # All twos (2×5)
+        THREES: 15,       # All threes (3×5)
+        FOURS: 20,        # All fours (4×5)
+        FIVES: 25,        # All fives (5×5)
+        SIXES: 30,        # All sixes (6×5)
+        THREE_OF_A_KIND: 30,  # All sixes (maximum possible sum)
+        FOUR_OF_A_KIND: 30,   # All sixes (maximum possible sum)
+        FULL_HOUSE: 25,       # Fixed score
+        SMALL_STRAIGHT: 30,   # Fixed score
+        LARGE_STRAIGHT: 40,   # Fixed score
+        YAHTZEE: 50,         # Fixed score
+        CHANCE: 30           # All sixes (maximum possible sum)
+    }
+    
     def __init__(self, difficulty="medium"):
         """Initialize the AI agent with a difficulty level."""
         self.difficulty = difficulty  # "easy", "medium", "hard", "greedy1", "greedy2", "greedy3", "random"
@@ -219,6 +236,21 @@ class YahtzeeAI:
     
     def _analyze_dice_values(self, dice_values):
         """Detailed analysis of current dice values."""
+        if not dice_values:
+            return {
+                'counts': Counter(),
+                'max_count': 0,
+                'unique_values': 0,
+                'sequence_length': 0,
+                'sequence': [],
+                'sum': 0,
+                'has_pair': False,
+                'has_three': False,
+                'has_four': False,
+                'most_common': [],
+                'potential_straight': False
+            }
+            
         counter = Counter(dice_values)
         sorted_vals = sorted(dice_values)
         sequence = self._find_longest_sequence(sorted_vals)
@@ -397,9 +429,17 @@ class YahtzeeAI:
         dice_analysis = self._analyze_dice_values(dice_values)
         available_categories = game_state['available_categories']
         
+        # If no categories are available, return None
+        if not available_categories:
+            return None
+        
         # Calculate base scores for all available categories
         scores = {cat: self.scoresheet.get_potential_score(cat, dice_values) 
                  for cat in available_categories}
+        
+        # Special case: If we have a Yahtzee and it's available, take it
+        if YAHTZEE in scores and scores[YAHTZEE] == 50:
+            return YAHTZEE
         
         # Apply strategic weights to each category
         weighted_scores = {}
@@ -427,18 +467,23 @@ class YahtzeeAI:
                 value = value_map[category]
                 needed_avg = game_state['avg_needed_per_remaining']
                 
-                if base_score >= needed_avg:  # Good score for upper section
+                # If this is a good score for this number, prioritize it
+                if base_score >= value * 3:
+                    weight = 1.4
+                elif base_score >= needed_avg:  # Good score for upper section
                     if game_state['needed_for_bonus'] > 0:  # Still need bonus
                         weight = 1.3
-                    elif base_score >= value * 3:  # Exceptionally good score
-                        weight = 1.2
                 elif game_state['game_progress'] > 0.8 and game_state['needed_for_bonus'] <= 8:
                     # Late game, close to bonus
                     weight = 1.4
+                
+                # Early game: Prioritize upper section
+                if game_state['game_progress'] < 0.3:
+                    weight *= 1.2  # Additional boost for upper section in early game
             
             # Handle special scoring categories
             if category in [SMALL_STRAIGHT, LARGE_STRAIGHT, FULL_HOUSE]:
-                if base_score == self.scoresheet.category_max_scores[category]:
+                if base_score == self.CATEGORY_MAX_SCORES[category]:
                     # Maximum score for these categories
                     weight = 1.2 if game_state['game_progress'] < 0.5 else 1.4
             
@@ -453,19 +498,23 @@ class YahtzeeAI:
             if game_state['game_progress'] > 0.8:
                 if base_score == 0:  # Avoid zeros late game if possible
                     weight = 0.7
-                elif base_score > self.scoresheet.category_max_scores[category] * 0.7:
+                elif base_score > self.CATEGORY_MAX_SCORES[category] * 0.7:
                     # Prefer high percentage scores late game
                     weight = 1.2
             
             # Early game adjustments
             elif game_state['game_progress'] < 0.3:
                 if category == CHANCE:  # Save chance for later
-                    weight = 0.8
+                    weight = 0.6  # Significantly reduce chance of using CHANCE early
                 elif base_score == 0:  # More acceptable to take zeros early
                     weight = 0.9
             
             weighted_scores[category] = base_score * weight
         
+        # If no weighted scores (shouldn't happen with the above check), return None
+        if not weighted_scores:
+            return None
+            
         # Choose the category with the highest weighted score
         best_category = max(weighted_scores.items(), key=lambda x: x[1])[0]
         logger.info(f"\nHard AI choosing category for dice values: {dice_values}")
@@ -544,7 +593,7 @@ class YahtzeeAI:
                 current_sequence = [sorted_vals[i]]
         
         sequences.append(current_sequence)
-        return max(sequences, key=len)
+        return max(sequences, key=len) if sequences else []
 
     def _calculate_expected_score_for_reroll(self, keep_indices, current_values):
         """Calculate expected score for a given set of dice to keep using complete enumeration."""
@@ -579,8 +628,15 @@ class YahtzeeAI:
     def _get_max_score(self, dice_values):
         """Get the maximum possible score across all available categories."""
         available_categories = self.scoresheet.get_available_categories()
-        scores = {cat: self.scoresheet.get_potential_score(cat, dice_values) 
+        if not available_categories:
+            return 0
+            
+        scores = {cat: self.scoresheet.get_potential_score(cat, dice_values)
                  for cat in available_categories}
+        
+        if not scores:
+            return 0
+            
         best_category = max(scores.items(), key=lambda x: x[1])
         logger.debug(f"Best score for {dice_values}: {best_category[1]} in category {best_category[0]}")
         return best_category[1]
