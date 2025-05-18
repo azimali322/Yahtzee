@@ -200,71 +200,71 @@ class YahtzeeTrainer:
                 'relative_rank': 0  # Placeholder for now
             }
             
-            # First decision: which dice to reroll
-            dice_action, dice_log_prob = self.agent.ac_net.get_dice_action(obs)
-            if dice.roll_count < 3:  # Can only reroll if not used all rolls
+            # Get action from unified action space
+            action, dice_action, category_idx, action_logits = self.agent.ac_net.get_action(obs)
+            
+            # Handle dice reroll if applicable
+            if dice_action is not None and dice.roll_count < 3:  # Can only reroll if not used all rolls
                 reroll_indices = [i for i, should_reroll in enumerate(dice_action) if should_reroll]
                 dice.roll_specific(reroll_indices)
             
-            # Second decision: which category to score in
-            category_idx, category_log_prob = self.agent.ac_net.get_category_action(obs)
-            category = ALL_CATEGORIES[category_idx]
-            
-            # Score the dice and calculate reward
-            score = scoresheet.score_category(category, dice.get_values())
-            
-            # Calculate immediate reward
-            immediate_reward = self.normalize_score(score)
-            
-            # Add bonus rewards for strategic plays
-            if category in ['YAHTZEE', 'LARGE_STRAIGHT']:
-                immediate_reward *= 1.2  # Bonus for difficult combinations
-            elif scoresheet.get_upper_section_bonus() > 0:
-                immediate_reward *= 1.1  # Bonus for achieving upper section bonus
-            
-            # Scale the reward using running statistics
-            scaled_reward = self.reward_scaler.scale(immediate_reward)
-            turn_rewards.append(scaled_reward)
-            episode_reward += scaled_reward
-            
-            # Store transition
-            next_obs = {
-                'dice': np.array(dice.get_values()),
-                'roll_number': dice.roll_count,
-                'scoresheet': np.array([scoresheet.scores.get(cat, -1) for cat in ALL_CATEGORIES]),
-                'upper_bonus': float(scoresheet.get_upper_section_bonus() > 0),
-                'yahtzee_bonus': np.array([scoresheet.yahtzee_bonus_score // 100]),
-                'opponent_scores': np.array([0]),
-                'relative_rank': 0
-            }
-            
-            done = scoresheet.is_complete()
-            
-            # Add final game reward if done
-            if done:
-                final_score = scoresheet.get_grand_total()
-                final_reward = self.normalize_score(final_score) * 0.5  # Final game reward
-                scaled_final_reward = self.reward_scaler.scale(final_reward)
-                episode_reward += scaled_final_reward
-            
-            # Store experience
-            self.agent.store_transition(
-                state=obs,
-                dice_action=dice_action,
-                category_action=category_idx,
-                reward=scaled_reward,
-                next_state=next_obs,
-                done=done
-            )
-            
-            observations.append(obs)
-            
-            # Reset dice for next turn if not done
-            if not done:
-                dice.reset_roll_count()
-            
-            # Update reward statistics
-            self.reward_scaler.update(immediate_reward)
+            # Handle category scoring if applicable
+            if category_idx is not None:
+                category = ALL_CATEGORIES[category_idx]
+                # Score the dice and calculate reward
+                score = scoresheet.record_score(category, dice.get_values())
+                
+                # Calculate immediate reward
+                immediate_reward = self.normalize_score(score)
+                
+                # Add bonus rewards for strategic plays
+                if category in ['YAHTZEE', 'LARGE_STRAIGHT']:
+                    immediate_reward *= 1.2  # Bonus for difficult combinations
+                elif scoresheet.get_upper_section_bonus() > 0:
+                    immediate_reward *= 1.1  # Bonus for achieving upper section bonus
+                
+                # Scale the reward using running statistics
+                scaled_reward = self.reward_scaler.scale(immediate_reward)
+                turn_rewards.append(scaled_reward)
+                episode_reward += scaled_reward
+                
+                # Store transition
+                next_obs = {
+                    'dice': np.array(dice.get_values()),
+                    'roll_number': dice.roll_count,
+                    'scoresheet': np.array([scoresheet.scores.get(cat, -1) for cat in ALL_CATEGORIES]),
+                    'upper_bonus': float(scoresheet.get_upper_section_bonus() > 0),
+                    'yahtzee_bonus': np.array([scoresheet.yahtzee_bonus_score // 100]),
+                    'opponent_scores': np.array([0]),
+                    'relative_rank': 0
+                }
+                
+                done = scoresheet.is_complete()
+                
+                # Add final game reward if done
+                if done:
+                    final_score = scoresheet.get_grand_total()
+                    final_reward = self.normalize_score(final_score) * 0.5  # Final game reward
+                    scaled_final_reward = self.reward_scaler.scale(final_reward)
+                    episode_reward += scaled_final_reward
+                
+                # Store experience
+                self.agent.store_transition(
+                    state=obs,
+                    action=action,  # Store the unified action
+                    reward=scaled_reward,
+                    next_state=next_obs,
+                    done=done
+                )
+                
+                observations.append(obs)
+                
+                # Reset dice for next turn if not done
+                if not done:
+                    dice.reset_roll_count()
+                
+                # Update reward statistics
+                self.reward_scaler.update(immediate_reward)
         
         return observations, episode_reward
     
@@ -301,25 +301,24 @@ class YahtzeeTrainer:
                         'relative_rank': 0
                     }
                     
-                    # Get dice action
-                    dice_action, _ = self.agent.ac_net.get_dice_action(obs)
-                    if dice.roll_count < 3:
+                    # Get action from unified action space
+                    _, dice_action, category_idx, _ = self.agent.ac_net.get_action(obs, deterministic=True)
+                    
+                    # Handle dice reroll if applicable
+                    if dice_action is not None and dice.roll_count < 3:
                         reroll_indices = [i for i, should_reroll in enumerate(dice_action) if should_reroll]
                         dice.roll_specific(reroll_indices)
                     
-                    # Get category action
-                    category_idx, _ = self.agent.ac_net.get_category_action(obs)
-                    category = ALL_CATEGORIES[category_idx]
-                    
-                    # Score and get reward
-                    score = scoresheet.score_category(category, dice.get_values())
-                    reward = self.normalize_score(score)
-                    episode_reward += reward
-                    
-                    turn_count += 1
-                    
-                    if not scoresheet.is_complete():
-                        dice.reset_roll_count()
+                    # Handle category scoring if applicable
+                    if category_idx is not None:
+                        category = ALL_CATEGORIES[category_idx]
+                        score = scoresheet.record_score(category, dice.get_values())
+                        reward = self.normalize_score(score)
+                        episode_reward += reward
+                        turn_count += 1
+                        
+                        if not scoresheet.is_complete():
+                            dice.reset_roll_count()
                 
                 # Collect statistics
                 final_score = scoresheet.get_grand_total()
@@ -423,135 +422,135 @@ class YahtzeeTrainer:
             if isinstance(value, (int, float)):
                 self.writer.add_scalar(f"{prefix}/{name}", value, step)
     
+    def load_pretrained_model(self, model_path: str):
+        """Load a pre-trained model and prepare it for RL training."""
+        logger.info(f"Loading pre-trained model from {model_path}")
+        try:
+            # Load just the model state dict
+            state_dict = torch.load(model_path, map_location=self.device)
+            self.agent.ac_net.load_state_dict(state_dict)
+            
+            # Initialize optimizer after loading model
+            self.agent.optimizer = optim.Adam(
+                self.agent.ac_net.parameters(),
+                lr=self.learning_rate,
+                weight_decay=1e-5  # Add L2 regularization
+            )
+            
+            # Try to load metrics if they exist
+            metrics_path = Path(model_path).parent / "metrics_final.json"
+            if metrics_path.exists():
+                with open(metrics_path, 'r') as f:
+                    metrics = json.load(f)
+                if 'avg_game_score' in metrics:
+                    self.best_eval_score = metrics['avg_game_score']
+                    logger.info(f"Loaded initial best score: {self.best_eval_score}")
+            
+            logger.info("Successfully loaded pre-trained model")
+        except Exception as e:
+            logger.error(f"Error loading pre-trained model: {e}")
+            raise
+
     def train(self):
-        """Main training loop."""
-        logger.info(f"Starting training on device: {self.device}")
-        logger.info(f"Experiment name: {self.experiment_name}")
-        logger.info(f"Tensorboard logs: {self.run_dir / 'tensorboard'}")
+        """Train the agent using actor-critic with GAE."""
+        logger.info(f"Starting training with experiment name: {self.experiment_name}")
+        logger.info(f"Training device: {self.device}")
         
         start_time = time.time()
-        running_reward = 0
+        episode = 0
+        total_steps = 0
         
-        for episode in range(self.n_episodes):
+        # Initialize learning rate scheduler
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.agent.optimizer,
+            mode='max',
+            factor=0.5,
+            patience=5,
+            min_lr=1e-5
+        )
+        
+        while episode < self.n_episodes:
             # Collect experience
             observations, episode_reward = self.collect_episode()
+            total_steps += len(observations)
             
-            # Update running reward
-            running_reward = 0.05 * episode_reward + (1 - 0.95) * running_reward
-            
-            # Store metrics
+            # Update metrics
             self.episode_rewards.append(episode_reward)
             self.episode_lengths.append(len(observations))
             
             # Log episode metrics
-            self.log_metrics(
-                {
-                    'reward': episode_reward,
-                    'running_reward': running_reward,
-                    'episode_length': len(observations)
-                },
-                episode,
-                prefix='train'
-            )
+            self.writer.add_scalar('train/episode_reward', episode_reward, episode)
+            self.writer.add_scalar('train/episode_length', len(observations), episode)
             
-            # Update policy if we have enough experience
-            if len(self.agent.transitions) >= self.batch_size:
-                losses = self.agent.update()
-                if losses is not None:
-                    policy_loss, value_loss, entropy_loss = losses
-                    self.policy_losses.append(policy_loss)
-                    self.value_losses.append(value_loss)
-                    self.entropy_losses.append(entropy_loss)
-                    
-                    # Log loss metrics
-                    self.log_metrics(
-                        {
-                            'policy_loss': policy_loss,
-                            'value_loss': value_loss,
-                            'entropy_loss': entropy_loss
-                        },
-                        episode,
-                        prefix='losses'
-                    )
-                    
-                    # Log hyperparameter schedules
-                    hyperparams = self.agent.update_hyperparameters()
-                    self.log_metrics(
-                        {
-                            'gae_lambda': hyperparams['gae_lambda'],
-                            'entropy_coef': hyperparams['entropy_coef'],
-                            'learning_rate': hyperparams['learning_rate']
-                        },
-                        episode,
-                        prefix='hyperparameters'
-                    )
-            
-            # Evaluation phase
+            # Perform evaluation
             if (episode + 1) % self.eval_frequency == 0:
-                eval_stats = self.evaluate()
-                self.eval_scores.append(eval_stats['avg_score'])
+                eval_metrics = self.evaluate()
+                self.log_metrics(eval_metrics, episode, prefix='eval/')
                 
-                # Log evaluation metrics
-                self.log_metrics(eval_stats, episode, prefix='eval')
+                # Update learning rate based on evaluation performance
+                scheduler.step(eval_metrics['avg_score'])
                 
-                # Save best model if we have a new best score
-                is_best = eval_stats['avg_score'] > self.best_eval_score
-                if is_best:
-                    self.best_eval_score = eval_stats['avg_score']
-                    logger.info(f"New best model with eval score: {self.best_eval_score:.2f}")
+                # Save checkpoint if best model
+                if eval_metrics['avg_score'] > self.best_eval_score:
+                    self.best_eval_score = eval_metrics['avg_score']
+                    self.save_checkpoint(episode, is_best=True)
+                    logger.info(f"New best model with score: {self.best_eval_score:.1f}")
                 
-                # Log evaluation results and current hyperparameters
-                logger.info(
-                    f"\nEvaluation after episode {episode + 1}:\n"
-                    f"Average Score: {eval_stats['avg_score']:.2f}\n"
-                    f"Average Episode Length: {eval_stats['avg_length']:.2f}\n"
-                    f"Upper Bonus Rate: {eval_stats['upper_bonus_rate']:.2%}\n"
-                    f"Yahtzee Rate: {eval_stats['yahtzee_rate']:.2%}\n"
-                    f"Current GAE Lambda: {hyperparams['gae_lambda']:.3f}\n"
-                    f"Current Entropy Coef: {hyperparams['entropy_coef']:.2e}\n"
-                    f"Current Learning Rate: {hyperparams['learning_rate']:.2e}\n"
-                )
+                # Regular checkpoint
+                if (episode + 1) % self.checkpoint_frequency == 0:
+                    self.save_checkpoint(episode)
+                
+                # Early stopping check
+                recent_rewards = self.episode_rewards[-100:]
+                if len(recent_rewards) >= 100:
+                    avg_reward = sum(recent_rewards) / len(recent_rewards)
+                    if avg_reward > 300:  # High average score threshold
+                        logger.info(f"Reached target performance with average reward {avg_reward:.1f}")
+                        break
             
-            # Save checkpoint
-            if (episode + 1) % self.checkpoint_frequency == 0:
-                self.save_checkpoint(episode + 1, is_best=is_best)
-                logger.info(f"Saved checkpoint at episode {episode + 1}")
+            # Update policy
+            if len(self.agent.transitions) >= self.batch_size:
+                policy_loss, value_loss, entropy = self.agent.update()
+                
+                # Log training metrics
+                self.writer.add_scalar('train/policy_loss', policy_loss, total_steps)
+                self.writer.add_scalar('train/value_loss', value_loss, total_steps)
+                self.writer.add_scalar('train/entropy', entropy, total_steps)
+                
+                # Store losses for tracking
+                self.policy_losses.append(policy_loss)
+                self.value_losses.append(value_loss)
+                self.entropy_losses.append(entropy)
+                
+                # Adjust entropy coefficient
+                self.agent.entropy_coef = max(0.001, self.agent.entropy_coef * 0.995)
             
-            # Log training progress
-            if (episode + 1) % 100 == 0:
+            episode += 1
+            
+            # Log progress
+            if episode % 10 == 0:
                 elapsed_time = time.time() - start_time
-                reward_stats = self.reward_scaler.get_stats()
-                
-                # Log reward scaler stats
-                self.log_metrics(reward_stats, episode, prefix='reward_scaler')
-                
+                steps_per_sec = total_steps / elapsed_time
                 logger.info(
-                    f"Episode {episode + 1}/{self.n_episodes} | "
-                    f"Running reward: {running_reward:.2f} | "
-                    f"Episode reward: {episode_reward:.2f} | "
-                    f"Reward mean: {reward_stats['mean']:.2f} | "
-                    f"Reward std: {reward_stats['std']:.2f} | "
-                    f"Time: {elapsed_time:.2f}s"
+                    f"Episode {episode}/{self.n_episodes} | "
+                    f"Steps: {total_steps} | "
+                    f"Steps/sec: {steps_per_sec:.1f} | "
+                    f"Last reward: {episode_reward:.1f} | "
+                    f"Best eval score: {self.best_eval_score:.1f}"
                 )
+        
+        # Final evaluation
+        final_metrics = self.evaluate(n_episodes=100)  # More episodes for final evaluation
+        self.log_metrics(final_metrics, episode, prefix='final/')
+        self.save_checkpoint(episode, is_best=True)
+        
+        # Save final metrics
+        with open(self.metrics_dir / "final_metrics.json", 'w') as f:
+            json.dump(final_metrics, f, indent=4)
         
         logger.info("Training completed!")
-        # Save final checkpoint
-        self.save_checkpoint(self.n_episodes, is_best=False)
-        self.writer.close()
-
-    def load_pretrained_model(self, model_path: str):
-        """Load a pre-trained model."""
-        checkpoint = torch.load(model_path)
-        self.agent.ac_net.load_state_dict(checkpoint['model_state_dict'])
-        
-        # Don't load optimizer state from pre-training
-        # Instead, initialize with RL training parameters
-        self.agent.optimizer = optim.Adam(
-            self.agent.ac_net.parameters(),
-            lr=self.learning_rate
-        )
-        
-        logger.info("Loaded pre-trained model weights")
+        logger.info(f"Final evaluation metrics: {final_metrics}")
+        return final_metrics
 
 if __name__ == "__main__":
     # Create trainer with default hyperparameters

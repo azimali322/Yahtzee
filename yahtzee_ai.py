@@ -78,14 +78,15 @@ class YahtzeeAI:
             
             # Get action from the network
             with torch.no_grad():
-                binary_action, _ = self.ac_net.get_dice_action(
+                action, dice_action, category, _ = self.ac_net.get_action(
                     obs,
                     deterministic=(roll_number == 2)  # Be deterministic on last roll
                 )
             
-            # Convert binary action tensor to list of indices
-            binary_action = binary_action.squeeze().cpu().numpy()  # Convert to 1D numpy array
-            return [i for i, reroll in enumerate(binary_action) if reroll]
+            # Only return reroll indices if this is a dice action
+            if dice_action is not None:
+                return [i for i, reroll in enumerate(dice_action) if reroll]
+            return []  # No reroll if category action
         elif self.difficulty == "greedy4":
             keep_action, _ = self._greedy4_ai.get_action(self.dice)
             return [i for i, keep in enumerate(keep_action) if not keep]
@@ -115,12 +116,15 @@ class YahtzeeAI:
             
             # Get action from the network
             with torch.no_grad():
-                category_idx, _ = self.ac_net.get_category_action(
+                action, dice_action, category, _ = self.ac_net.get_action(
                     obs,
                     deterministic=False  # Could be True for evaluation
                 )
             
-            return ALL_CATEGORIES[category_idx]
+            # Only return category if this is a category action
+            if category is not None:
+                return ALL_CATEGORIES[category]
+            return None  # No category if dice action
         elif self.difficulty == "greedy4":
             _, target_category = self._greedy4_ai.get_action(self.dice)
             return target_category
@@ -205,7 +209,7 @@ class YahtzeeAI:
         
         # Calculate best reroll strategy considering future turns
         best_reroll = self._calculate_optimal_reroll(
-            current_dice_values, 
+            current_values, 
             roll_number,
             game_state
         )
@@ -872,104 +876,92 @@ class YahtzeeAI:
         return chosen_category
 
 class RLAgent(YahtzeeAI):
-    """Reinforcement Learning agent using Actor-Critic architecture."""
+    """Reinforcement Learning agent for playing Yahtzee."""
     
     def __init__(self, observation_space, device="cpu"):
+        """Initialize the RL agent."""
         super().__init__(difficulty="rl")
-        self.device = torch.device(device)
         
-        # Initialize actor-critic network
+        # Initialize network and optimizer
         self.ac_net = YahtzeeActorCritic(
             observation_space=observation_space,
-            n_actions_dice=32,  # 2^5 possible dice reroll combinations
-            n_actions_category=len(ALL_CATEGORIES)
-        ).to(device)
+            device=device
+        )
         
-        # Initialize optimizer with base learning rate
-        self.base_lr = 1e-3
-        self.optimizer = optim.Adam(self.ac_net.parameters(), lr=self.base_lr)
+        # Training parameters
+        self.learning_rate = 5e-3  # Initial learning rate
+        self.optimizer = optim.Adam(self.ac_net.parameters(), lr=self.learning_rate)
         
-        # Training parameters with initial values
-        self.gamma = 0.99  # discount factor
-        self.gae_lambda = 0.2  # Initial GAE lambda parameter (will be increased over time)
-        self.entropy_coef = 1e-3  # Initial entropy coefficient (will be decayed)
-        self.value_loss_coef = 0.5  # value loss coefficient
+        # Experience replay buffer
+        self.transitions = []
+        self.max_transitions = 100000  # Maximum size of replay buffer
         
-        # Hyperparameter scheduling parameters
-        self.lambda_transition_steps = 60_000  # Steps to transition lambda from 0.2 to 0.8
-        self.entropy_transition_steps = 80_000  # Steps for entropy coefficient decay
-        self.lr_decay_steps = 60_000  # Steps for learning rate decay
-        self.lr_decay_rate = 0.2  # Learning rate decay rate
+        # Hyperparameters
+        self.gamma = 0.99  # Discount factor
+        self.gae_lambda = 0.95  # GAE lambda parameter
+        self.entropy_coef = 0.01  # Entropy coefficient
+        self.value_loss_coef = 0.5  # Value loss coefficient
+        self.max_grad_norm = 0.5  # Maximum gradient norm
         
-        # Buffer for storing transitions
-        self.transitions: List[Transition] = []
-        
-        # Step counter for scheduling
-        self.total_steps = 0
+        # Training state
+        self.deterministic = False  # Whether to use deterministic actions
+        self.device = device
     
     def update_hyperparameters(self):
-        """Update hyperparameters based on current step count."""
-        # Update GAE lambda using polynomial schedule (linear in this case, power=1)
-        self.gae_lambda = 0.2 + (0.8 - 0.2) * min(1.0, self.total_steps / self.lambda_transition_steps)
+        """Update hyperparameters during training."""
+        # Decay entropy coefficient
+        self.entropy_coef = max(0.001, self.entropy_coef * 0.995)
         
-        # Update entropy coefficient
-        if self.total_steps < self.entropy_transition_steps:
-            self.entropy_coef = 1e-3 * (0.1 ** (self.total_steps / self.entropy_transition_steps))
-        else:
-            self.entropy_coef = -1e-2
-        
-        # Update learning rate using exponential decay
-        current_lr = self.base_lr * (self.lr_decay_rate ** (self.total_steps / self.lr_decay_steps))
+        # Decay learning rate
         for param_group in self.optimizer.param_groups:
-            param_group['lr'] = current_lr
-        
-        self.total_steps += 1
+            param_group['lr'] = max(1e-5, param_group['lr'] * 0.995)
         
         return {
             'gae_lambda': self.gae_lambda,
             'entropy_coef': self.entropy_coef,
-            'learning_rate': current_lr
+            'learning_rate': self.optimizer.param_groups[0]['lr']
         }
     
     def decide_reroll(self, current_dice_values, roll_number) -> List[int]:
-        """Decide which dice to reroll using the actor network."""
-        # Create observation for the network
+        """Decide which dice to reroll using the actor-critic network."""
+        # Create observation
         obs = self._get_current_observation()
         
-        # Get action from the network
+        # Get action from network
         with torch.no_grad():
-            binary_action, _ = self.ac_net.get_dice_action(
+            _, dice_action, category_idx, _ = self.ac_net.get_action(
                 obs,
-                deterministic=(roll_number == 2)  # Be deterministic on last roll
+                deterministic=self.deterministic or roll_number == 2  # Be deterministic on last roll
             )
         
-        # Convert binary action tensor to list of indices
-        binary_action = binary_action.squeeze().cpu().numpy()  # Convert to 1D numpy array
-        return [i for i, reroll in enumerate(binary_action) if reroll]
+        # Only return reroll indices if this is a dice action
+        if dice_action is not None:
+            return [i for i, reroll in enumerate(dice_action) if reroll]
+        return []  # No reroll if category action
     
     def choose_category(self, dice_values) -> str:
-        """Choose category using the actor network."""
-        # Create observation for the network
+        """Choose a category using the actor-critic network."""
+        # Create observation
         obs = self._get_current_observation()
         
-        # Get action from the network
+        # Get action from network
         with torch.no_grad():
-            category_idx, _ = self.ac_net.get_category_action(
+            _, dice_action, category_idx, _ = self.ac_net.get_action(
                 obs,
-                deterministic=False  # Could be True for evaluation
+                deterministic=self.deterministic
             )
         
-        return ALL_CATEGORIES[category_idx]
+        # Only return category if this is a category action
+        if category_idx is not None:
+            return ALL_CATEGORIES[category_idx]
+        return None  # No category if dice action
     
     def _get_current_observation(self) -> dict:
-        """Create observation dictionary from current game state."""
+        """Get current observation for the network."""
         return {
             'dice': np.array(self.dice.get_values()),
             'roll_number': self.dice.roll_count,
-            'scoresheet': np.array([
-                self.scoresheet.scores.get(cat, -1) 
-                for cat in ALL_CATEGORIES
-            ]),
+            'scoresheet': np.array([self.scoresheet.scores.get(cat, -1) for cat in ALL_CATEGORIES]),
             'upper_bonus': float(self.scoresheet.get_upper_section_bonus() > 0),
             'yahtzee_bonus': np.array([self.scoresheet.yahtzee_bonus_score // 100]),
             'opponent_scores': np.array([0]),  # Placeholder for now
@@ -979,20 +971,31 @@ class RLAgent(YahtzeeAI):
     def store_transition(
         self,
         state: dict,
-        dice_action: torch.Tensor,
-        category_action: int,
+        action: int,  # Unified action index
         reward: float,
         next_state: dict,
         done: bool
     ):
-        """Store a transition in the buffer."""
-        self.transitions.append(Transition(
-            state=state,
-            action=(dice_action, category_action),
+        """Store a transition in the replay buffer."""
+        # Convert state and next_state to tensors
+        state_tensor = self.ac_net._process_observation(state)
+        next_state_tensor = self.ac_net._process_observation(next_state)
+        
+        # Create transition
+        transition = Transition(
+            state=state_tensor,
+            action=action,
             reward=reward,
-            next_state=next_state,
+            next_state=next_state_tensor,
             done=done
-        ))
+        )
+        
+        # Add to buffer
+        self.transitions.append(transition)
+        
+        # Remove old transitions if buffer is full
+        if len(self.transitions) > self.max_transitions:
+            self.transitions.pop(0)
     
     def compute_gae(
         self,
@@ -1004,9 +1007,10 @@ class RLAgent(YahtzeeAI):
         advantages = torch.zeros_like(values)
         last_advantage = 0
         
+        # Compute GAE in reverse order
         for t in reversed(range(len(rewards))):
             if t == len(rewards) - 1:
-                next_value = 0
+                next_value = 0 if dones[t] else values[t + 1]
             else:
                 next_value = values[t + 1]
             
@@ -1017,71 +1021,64 @@ class RLAgent(YahtzeeAI):
         return advantages
     
     def update(self) -> Optional[Tuple[float, float, float]]:
-        """Update the actor-critic network using collected transitions."""
-        if not self.transitions:
+        """Update the actor-critic network using collected experience."""
+        if len(self.transitions) < 32:  # Need at least one batch
             return None
         
-        # Update hyperparameters
-        current_params = self.update_hyperparameters()
+        # Sample random batch
+        batch_size = min(32, len(self.transitions))
+        batch = random.sample(self.transitions, batch_size)
         
-        # Unzip transitions
-        states, actions, rewards, next_states, dones = zip(*self.transitions)
-        dice_actions, category_actions = zip(*actions)
+        # Unpack batch
+        states = torch.stack([t.state for t in batch])
+        actions = torch.tensor([t.action for t in batch], dtype=torch.long, device=self.device)
+        rewards = torch.tensor([t.reward for t in batch], dtype=torch.float32, device=self.device)
+        next_states = torch.stack([t.next_state for t in batch])
+        dones = torch.tensor([float(t.done) for t in batch], dtype=torch.float32, device=self.device)
         
-        # Convert to tensors
-        dice_actions = torch.stack([torch.tensor(a) for a in dice_actions])
-        category_actions = torch.tensor(category_actions)
-        rewards = torch.tensor(rewards)
-        dones = torch.tensor(dones)
+        # Get current values and action log probs
+        action_logits, values = self.ac_net(states)
+        action_log_probs = F.log_softmax(action_logits, dim=-1)
+        action_probs = F.softmax(action_logits, dim=-1)
         
-        # Get values and advantages using current GAE lambda
-        _, _, values = zip(*[self.ac_net(s) for s in states])
-        values = torch.cat(values)
-        advantages = self.compute_gae(rewards, values, dones)
-        returns = advantages + values
+        # Get next values for value targets
+        with torch.no_grad():
+            _, next_values = self.ac_net(next_states)
+            next_values = next_values.squeeze(-1)
+            
+            # Compute returns and advantages
+            returns = rewards + self.gamma * next_values * (1 - dones)
+            advantages = returns - values.squeeze(-1)
         
-        # Evaluate actions
-        dice_log_probs, category_log_probs, entropy, new_values = zip(*[
-            self.ac_net.evaluate_actions(s, da, ca)
-            for s, da, ca in zip(states, dice_actions, category_actions)
-        ])
+        # Compute losses
+        value_loss = F.mse_loss(values.squeeze(-1), returns)
         
-        # Compute losses using current entropy coefficient
-        dice_log_probs = torch.stack(dice_log_probs)
-        category_log_probs = torch.stack(category_log_probs)
-        new_values = torch.cat(new_values)
+        # Get action log probs and entropy
+        action_log_probs = action_log_probs.gather(1, actions.unsqueeze(-1)).squeeze(-1)
         
-        # Actor loss
-        actor_loss = -(
-            dice_log_probs * advantages.detach() +
-            category_log_probs * advantages.detach()
-        ).mean()
+        # Compute entropy (using the full action distribution)
+        entropy = -(action_probs * torch.log(action_probs + 1e-10)).sum(-1).mean()
         
-        # Critic loss
-        value_loss = F.mse_loss(new_values, returns.detach())
-        
-        # Entropy loss (for exploration) with current coefficient
-        entropy_loss = -torch.stack(entropy).mean() * current_params['entropy_coef']
+        # Compute policy loss using advantages
+        policy_loss = -(advantages.detach() * action_log_probs).mean()
         
         # Total loss
-        total_loss = (
-            actor_loss +
-            self.value_loss_coef * value_loss +
-            entropy_loss
+        loss = (
+            policy_loss
+            + self.value_loss_coef * value_loss
+            - self.entropy_coef * entropy
         )
         
         # Optimize
         self.optimizer.zero_grad()
-        total_loss.backward()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.ac_net.parameters(), self.max_grad_norm)
         self.optimizer.step()
         
-        # Clear transitions
-        self.transitions = []
-        
         return (
-            actor_loss.item(),
+            policy_loss.item(),
             value_loss.item(),
-            entropy_loss.item()
+            entropy.item()
         )
 
 class Greedy4AI:

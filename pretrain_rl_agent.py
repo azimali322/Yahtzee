@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import io
 import random
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -27,7 +28,7 @@ class PreTrainer:
         self,
         n_episodes: int = 10000,
         batch_size: int = 128,
-        learning_rate: float = 1e-3,  # Reduced from 5e-0 to 1e-3
+        learning_rate: float = 5e-3,  # Updated to 5e-3
         experiment_name: str = None,
         device: str = None,  # Changed default to None
         checkpoint_interval: int = 1000,
@@ -79,13 +80,6 @@ class PreTrainer:
             weight_decay=1e-4  # Add L2 regularization
         )
         
-        # Learning rate scheduler
-        self.scheduler = torch.optim.lr_scheduler.StepLR(
-            self.optimizer,
-            step_size=1000,
-            gamma=0.5
-        )
-        
         # Setup logging and checkpointing
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.experiment_name = experiment_name or f"pretrain_{timestamp}"
@@ -126,7 +120,7 @@ class PreTrainer:
         else:
             logger.warning("No previous checkpoint found, starting from scratch")
     
-    def collect_teacher_decision(self, dice: Dice, scoresheet: ScoreSheet) -> Tuple[torch.Tensor, int]:
+    def collect_teacher_decision(self, dice: Dice, scoresheet: ScoreSheet) -> int:
         """Collect teacher's decision for current game state."""
         current_values = dice.get_values()
         
@@ -134,15 +128,14 @@ class PreTrainer:
         reroll_indices = self.teacher.decide_reroll(current_values, dice.roll_count)
         category = self.teacher.choose_category(current_values)
         
-        # Convert reroll indices to binary action
-        dice_action = torch.zeros(5, dtype=torch.bool, device=self.device)
-        for idx in reroll_indices:
-            dice_action[idx] = True
+        if category is not None:
+            # Category action: offset by 32 (number of possible dice combinations)
+            action = ALL_CATEGORIES.index(category) + 32
+        else:
+            # Dice reroll action: convert reroll indices to binary number
+            action = sum(1 << idx for idx in reroll_indices)
         
-        # Convert category to index
-        category_idx = ALL_CATEGORIES.index(category) if category else 0
-        
-        return dice_action, category_idx
+        return action
     
     def get_observation(self, dice: Dice, scoresheet: ScoreSheet):
         """Create observation dictionary from current game state."""
@@ -164,7 +157,7 @@ class PreTrainer:
         """Run one pre-training episode and collect experience."""
         dice = Dice()
         scoresheet = ScoreSheet()
-        episode_experiences = []  # Store experiences for this episode
+        episode_experiences = []
         
         # Set game state for teacher
         self.teacher.set_game_state(scoresheet, dice)
@@ -173,22 +166,19 @@ class PreTrainer:
             # Get current observation
             obs = self.get_observation(dice, scoresheet)
             
-            # Get teacher's decisions
-            teacher_dice_action, teacher_category_idx = self.collect_teacher_decision(
-                dice, scoresheet
-            )
+            # Get teacher's decision as a single action
+            action = self.collect_teacher_decision(dice, scoresheet)
             
             # Store experience
-            episode_experiences.append((obs, teacher_dice_action, teacher_category_idx))
+            episode_experiences.append((obs, action))
             
             # Apply teacher's decisions
-            if dice.roll_count < 3:
-                reroll_indices = [i for i, reroll in enumerate(teacher_dice_action) if reroll]
-                dice.roll_specific(reroll_indices)
-            
-            # Score category if chosen
-            if teacher_category_idx is not None:
-                category = ALL_CATEGORIES[teacher_category_idx]
+            if action < 32:  # Dice reroll action
+                reroll_indices = [i for i in range(5) if (action >> i) & 1]
+                if dice.roll_count < 3 and reroll_indices:
+                    dice.roll_specific(reroll_indices)
+            else:  # Category action
+                category = ALL_CATEGORIES[action - 32]
                 scoresheet.record_score(category, dice.get_values())
                 dice.reset_roll_count()
         
@@ -224,32 +214,34 @@ class PreTrainer:
         self.writer.add_image('confusion_matrix', img.transpose(2, 0, 1), episode)
         
     def save_checkpoint(self, episode: int, metrics: Dict, is_best: bool = False):
-        """Save a checkpoint of the model and training state."""
-        checkpoint = {
-            'episode': episode,
-            'model_state_dict': self.student.ac_net.state_dict(),
-            'optimizer_state_dict': self.student.optimizer.state_dict(),
-            'metrics': metrics,
-            'dice_losses': self.dice_losses,
-            'category_losses': self.category_losses,
-            'category_confusion': self.category_confusion,
-        }
+        """Save training checkpoint."""
+        # Save only the model state dict
+        model_state = self.student.ac_net.state_dict()
         
         # Save regular checkpoint
-        checkpoint_path = self.checkpoint_dir / f"checkpoint_ep{episode}.pt"
-        torch.save(checkpoint, checkpoint_path)
+        checkpoint_path = self.checkpoint_dir / f"checkpoint_{episode}.pt"
+        torch.save(model_state, checkpoint_path)
         
-        # Save as best model if applicable
+        # Save best model if this is the best so far
         if is_best:
             best_model_path = self.checkpoint_dir / "best_model.pt"
-            torch.save(checkpoint, best_model_path)
-            logger.info(f"Saved new best model at episode {episode}")
-            
+            torch.save(model_state, best_model_path)
+            logger.info(f"Saved new best model with score {metrics['avg_game_score']:.1f}")
+        
+        # Save metrics separately as JSON
+        metrics_path = self.checkpoint_dir / f"metrics_{episode}.json"
+        with open(metrics_path, 'w') as f:
+            json.dump(metrics, f, indent=4)
+        
         # Remove old checkpoints (keep only last 3)
-        checkpoints = sorted(self.checkpoint_dir.glob("checkpoint_ep*.pt"))
+        checkpoints = sorted(self.checkpoint_dir.glob("checkpoint_*.pt"))
         if len(checkpoints) > 3:
             for checkpoint in checkpoints[:-3]:
                 checkpoint.unlink()
+                # Also remove corresponding metrics file
+                metrics_file = self.checkpoint_dir / f"metrics_{checkpoint.stem.split('_')[-1]}.json"
+                if metrics_file.exists():
+                    metrics_file.unlink()
                 
     def log_metrics(self, metrics: Dict, episode: int):
         """Log metrics to TensorBoard."""
@@ -285,47 +277,48 @@ class PreTrainer:
             while not scoresheet.is_complete():
                 obs = self.get_observation(dice, scoresheet)
                 
-                # Get teacher's decisions
-                teacher_dice_action, teacher_category_idx = self.collect_teacher_decision(
-                    dice, scoresheet
-                )
+                # Get teacher's decision as a single action
+                teacher_action = self.collect_teacher_decision(dice, scoresheet)
                 
-                # Get student's decisions
+                # Get student's decision
                 with torch.no_grad():
-                    student_dice_action, dice_logits = self.student.ac_net.get_dice_action(obs)
-                    student_category_idx, _ = self.student.ac_net.get_category_action(obs)
+                    student_action, student_dice_action, student_category, _ = self.student.ac_net.get_action(obs)
                 
                 # Compare decisions
-                dice_match = torch.all(student_dice_action == teacher_dice_action)
-                category_match = student_category_idx == teacher_category_idx
-                
-                # Update confusion matrix
-                self.category_confusion[teacher_category_idx][student_category_idx] += 1
-                
-                # Calculate dice similarity score (Jaccard index)
-                intersection = torch.sum(student_dice_action & teacher_dice_action).float()
-                union = torch.sum(student_dice_action | teacher_dice_action).float()
-                similarity = intersection / (union + 1e-8)
-                dice_similarity_scores.append(similarity.item())
-                
-                # Update per-category accuracy
-                if teacher_category_idx is not None:
-                    category = ALL_CATEGORIES[teacher_category_idx]
-                    per_category_accuracy[category]['total'] += 1
-                    if category_match:
-                        per_category_accuracy[category]['correct'] += 1
-                
-                total_dice_match += dice_match.item()
-                total_category_match += category_match
+                action_match = student_action == teacher_action
+                total_dice_match += action_match
+                total_category_match += action_match
                 total_decisions += 1
                 
-                # Apply teacher's decisions to advance game
-                if dice.roll_count < 3:
-                    reroll_indices = [i for i, reroll in enumerate(teacher_dice_action) if reroll]
-                    dice.roll_specific(reroll_indices)
+                # Update confusion matrix
+                teacher_category = teacher_action - 32 if teacher_action >= 32 else -1
+                student_category = student_action - 32 if student_action >= 32 else -1
+                if teacher_category >= 0 and student_category >= 0:
+                    self.category_confusion[teacher_category][student_category] += 1
                 
-                if teacher_category_idx is not None:
-                    category = ALL_CATEGORIES[teacher_category_idx]
+                # Calculate dice similarity score (Jaccard index)
+                if teacher_action < 32 and student_action < 32:
+                    teacher_binary = [(teacher_action >> i) & 1 for i in range(5)]
+                    student_binary = [(student_action >> i) & 1 for i in range(5)]
+                    intersection = sum(t & s for t, s in zip(teacher_binary, student_binary))
+                    union = sum(t | s for t, s in zip(teacher_binary, student_binary))
+                    similarity = intersection / (union if union > 0 else 1)
+                    dice_similarity_scores.append(similarity)
+                
+                # Update per-category accuracy
+                if teacher_action >= 32:
+                    category = ALL_CATEGORIES[teacher_action - 32]
+                    per_category_accuracy[category]['total'] += 1
+                    if action_match:
+                        per_category_accuracy[category]['correct'] += 1
+                
+                # Apply teacher's decisions to advance game
+                if teacher_action < 32:  # Dice reroll action
+                    reroll_indices = [i for i in range(5) if (teacher_action >> i) & 1]
+                    if dice.roll_count < 3 and reroll_indices:
+                        dice.roll_specific(reroll_indices)
+                else:  # Category action
+                    category = ALL_CATEGORIES[teacher_action - 32]
                     scoresheet.record_score(category, dice.get_values())
                     dice.reset_roll_count()
             
@@ -335,8 +328,8 @@ class PreTrainer:
         # Calculate metrics
         dice_accuracy = total_dice_match / total_decisions
         category_accuracy = total_category_match / total_decisions
-        avg_dice_similarity = np.mean(dice_similarity_scores)
-        avg_game_score = total_game_score / n_episodes  # New: Calculate average game score
+        avg_dice_similarity = np.mean(dice_similarity_scores) if dice_similarity_scores else 0
+        avg_game_score = total_game_score / n_episodes
         
         # Calculate per-category accuracies
         category_accuracies = {
@@ -348,7 +341,7 @@ class PreTrainer:
             'dice_accuracy': dice_accuracy,
             'category_accuracy': category_accuracy,
             'avg_dice_similarity': avg_dice_similarity,
-            'avg_game_score': avg_game_score,  # New: Include average game score
+            'avg_game_score': avg_game_score,
             'per_category_accuracy': category_accuracies
         }
     
@@ -358,73 +351,55 @@ class PreTrainer:
         start_time = time.time()
         
         # Training loop
-        for episode in tqdm(range(self.n_episodes)):
+        for episode in range(self.n_episodes):
             # Run episode and collect experience
-            episode_score = self.pretrain_episode()
+            game_score = self.pretrain_episode()
             
-            # Only update after collecting multiple episodes
+            # Update network every episodes_per_update episodes
             if (episode + 1) % self.episodes_per_update == 0:
-                # Train on replay buffer
                 dice_loss, category_loss = self.update_from_replay()
-                
-                # Store losses
                 self.dice_losses.append(dice_loss)
                 self.category_losses.append(category_loss)
-                
-                # Log training metrics
-                self.writer.add_scalar('train/dice_loss', dice_loss, episode)
-                self.writer.add_scalar('train/category_loss', category_loss, episode)
-                self.writer.add_scalar('train/game_score', episode_score, episode)  # New: Log game score
-                self.writer.add_scalar('train/learning_rate', self.optimizer.param_groups[0]['lr'], episode)
             
-            # Regular checkpointing
-            if (episode + 1) % self.checkpoint_interval == 0:
-                metrics = {
-                    'dice_loss': self.dice_losses[-1] if self.dice_losses else 0,
-                    'category_loss': self.category_losses[-1] if self.category_losses else 0,
-                    'game_score': episode_score,  # New: Include game score in metrics
-                    'learning_rate': self.optimizer.param_groups[0]['lr'],
-                    'episode': episode
-                }
-                self.save_checkpoint(episode, metrics)
+            # Print progress every 50 episodes
+            if (episode + 1) % 50 == 0:
+                elapsed_time = time.time() - start_time
+                eps_per_sec = (episode + 1) / elapsed_time
+                remaining_episodes = self.n_episodes - (episode + 1)
+                eta = remaining_episodes / eps_per_sec
+                logger.info(
+                    f"Episode {episode + 1}/{self.n_episodes} | "
+                    f"Speed: {eps_per_sec:.1f} eps/s | "
+                    f"ETA: {eta:.1f}s | "
+                    f"Game Score: {game_score:.1f}"
+                )
             
             # Evaluate periodically
             if (episode + 1) % self.eval_interval == 0:
-                eval_metrics = self.evaluate()
+                metrics = self.evaluate()
+                self.log_metrics(metrics, episode)
                 
-                # Log evaluation metrics
-                self.log_metrics(eval_metrics, episode)
-                
-                # Plot and log confusion matrix
-                self.plot_confusion_matrix(episode)
-                
-                # Track best model using combined metric including game score
-                combined_score = (
-                    eval_metrics['dice_accuracy'] + 
-                    2 * eval_metrics['category_accuracy'] +  # Weight category accuracy more
-                    eval_metrics['avg_game_score'] / 200.0  # Normalize game score to similar scale
-                )
-                
-                if combined_score > self.best_eval_score:
+                # Save checkpoint if this is the best model
+                combined_score = metrics['avg_game_score']
+                is_best = combined_score > self.best_eval_score
+                if is_best:
                     self.best_eval_score = combined_score
-                    self.save_checkpoint(episode, eval_metrics, is_best=True)
-                    logger.info(f"New best model with combined score: {combined_score:.4f}")
                 
-                # Log detailed metrics
-                logger.info(f"Episode {episode + 1}")
-                logger.info(f"Dice Accuracy: {eval_metrics['dice_accuracy']:.4f}")
-                logger.info(f"Category Accuracy: {eval_metrics['category_accuracy']:.4f}")
-                logger.info(f"Average Game Score: {eval_metrics['avg_game_score']:.1f}")
-                logger.info(f"Average Dice Similarity: {eval_metrics['avg_dice_similarity']:.4f}")
+                self.save_checkpoint(episode, metrics, is_best=is_best)
                 
-                # Store history for plotting
-                self.dice_accuracy_history.append(eval_metrics['dice_accuracy'])
-                self.category_accuracy_history.append(eval_metrics['category_accuracy'])
-                self.game_score_history.append(eval_metrics['avg_game_score'])
+                # Early stopping check
+                if metrics['dice_accuracy'] > 0.95 and metrics['category_accuracy'] > 0.95:
+                    logger.info("Reached target accuracy, stopping training early")
+                    break
+            
+            # Learning rate scheduling
+            if (episode + 1) % 1000 == 0:
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = max(1e-5, param_group['lr'] * 0.95)
         
-        # Final evaluation and saving
-        final_metrics = self.evaluate()
-        self.save_checkpoint(self.n_episodes - 1, final_metrics)
+        # Final evaluation
+        final_metrics = self.evaluate(n_episodes=100)  # More episodes for final evaluation
+        self.save_checkpoint(self.n_episodes - 1, final_metrics, is_best=True)
         self.plot_confusion_matrix(self.n_episodes - 1)
         
         # Log training duration
@@ -437,45 +412,106 @@ class PreTrainer:
         return final_metrics
 
     def update_from_replay(self):
-        """Train on a batch from the replay buffer."""
+        """Train on a batch from the replay buffer with combined dice and category losses."""
         if len(self.replay_buffer) < self.batch_size:
             return 0, 0
             
-        # Sample batch
-        batch = random.sample(self.replay_buffer, self.batch_size)
-        obs_batch, teacher_dice_batch, teacher_category_batch = zip(*batch)
+        # Sample batch with prioritization of recent experiences
+        recent_weight = 0.7  # 70% chance to sample from recent experiences
+        recent_size = min(len(self.replay_buffer) // 2, 1000)
+        
+        batch_indices = []
+        for _ in range(self.batch_size):
+            if random.random() < recent_weight and recent_size > 0:
+                # Sample from recent experiences
+                idx = random.randint(len(self.replay_buffer) - recent_size, len(self.replay_buffer) - 1)
+            else:
+                # Sample from all experiences
+                idx = random.randint(0, len(self.replay_buffer) - 1)
+            batch_indices.append(idx)
+        
+        batch = [self.replay_buffer[i] for i in batch_indices]
+        obs_batch, actions_batch = zip(*batch)
         
         # Convert to tensors
         obs_tensor = torch.stack([self._process_observation(obs) for obs in obs_batch])
-        dice_tensor = torch.stack([teacher_dice.clone().detach() for teacher_dice in teacher_dice_batch])
-        category_tensor = torch.tensor(teacher_category_batch, device=self.device)
+        actions_tensor = torch.tensor(actions_batch, device=self.device)
         
         # Forward pass
-        dice_logits, category_logits, _ = self.student.ac_net(obs_tensor)
+        action_logits, _ = self.student.ac_net(obs_tensor)
         
-        # Calculate losses with weights
-        dice_loss = self.dice_loss_weight * F.binary_cross_entropy_with_logits(
-            dice_logits,
-            dice_tensor.float()
-        )
-        category_loss = self.category_loss_weight * F.cross_entropy(
-            category_logits,
-            category_tensor
-        )
+        # Calculate combined loss using a masked approach
+        dice_mask = actions_tensor < 32
+        category_mask = ~dice_mask
         
-        # Total loss
-        total_loss = dice_loss + category_loss
+        # Get logits for both action types
+        dice_logits = action_logits[:, :32]  # First 32 outputs are for dice actions
+        category_logits = action_logits[:, 32:]  # Remaining outputs are for category actions
         
-        # Backward pass
+        # Calculate losses with masking
+        batch_size = len(actions_batch)
+        combined_loss = torch.zeros(1, device=self.device)
+        
+        # Process dice actions
+        if dice_mask.any():
+            dice_targets = actions_tensor[dice_mask]
+            dice_probs = F.softmax(dice_logits[dice_mask], dim=-1)
+            dice_log_probs = F.log_softmax(dice_logits[dice_mask], dim=-1)
+            dice_loss = F.nll_loss(
+                dice_log_probs,
+                dice_targets,
+                reduction='none'
+            )
+            combined_loss += dice_loss.mean()
+        
+        # Process category actions
+        if category_mask.any():
+            category_targets = actions_tensor[category_mask] - 32  # Adjust indices
+            category_probs = F.softmax(category_logits[category_mask], dim=-1)
+            category_log_probs = F.log_softmax(category_logits[category_mask], dim=-1)
+            category_loss = F.nll_loss(
+                category_log_probs,
+                category_targets,
+                reduction='none'
+            )
+            combined_loss += category_loss.mean()
+        
+        # Add regularization terms
+        # 1. Entropy regularization to encourage exploration
+        entropy_reg = -(
+            (F.softmax(dice_logits, dim=-1) * F.log_softmax(dice_logits, dim=-1)).sum(dim=-1).mean() +
+            (F.softmax(category_logits, dim=-1) * F.log_softmax(category_logits, dim=-1)).sum(dim=-1).mean()
+        ) * 0.01  # Small entropy coefficient
+        
+        # 2. Action correlation regularization
+        # This encourages meaningful relationships between dice and category actions
+        dice_probs_all = F.softmax(dice_logits, dim=-1)
+        category_probs_all = F.softmax(category_logits, dim=-1)
+        correlation_reg = torch.zeros(1, device=self.device)
+        
+        # Calculate correlation between dice patterns and category probabilities
+        for i in range(32):  # For each dice pattern
+            for j in range(13):  # For each category
+                # Higher probability of choosing certain categories with certain dice patterns
+                if i & (1 << j % 5):  # If the dice pattern includes this position
+                    correlation_reg += dice_probs_all[:, i].mean() * category_probs_all[:, j].mean()
+        
+        correlation_reg *= 0.005  # Small correlation coefficient
+        
+        # Final loss combines all components
+        total_loss = combined_loss - entropy_reg + correlation_reg
+        
+        # Backward pass with gradient clipping
         self.optimizer.zero_grad()
         total_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.student.ac_net.parameters(), self.max_grad_norm)
         self.optimizer.step()
         
-        # Step the learning rate scheduler
-        self.scheduler.step()
-        
-        return dice_loss.item(), category_loss.item()
+        # Return the individual loss components for logging
+        return (
+            combined_loss.item() if dice_mask.any() else 0,
+            combined_loss.item() if category_mask.any() else 0
+        )
         
     def _process_observation(self, obs):
         """Convert observation to tensor."""
@@ -487,7 +523,7 @@ if __name__ == "__main__":
     # Training configuration
     config = {
         "batch_size": 128,
-        "learning_rate": 1e-3,  # Reduced from 5e-0 to 1e-3
+        "learning_rate": 5e-3,  # Updated to 5e-3
         "checkpoint_interval": 1000,
         "eval_interval": 1000,
         "n_episodes": 10000,

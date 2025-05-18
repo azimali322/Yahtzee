@@ -1,0 +1,21 @@
+{
+    "dice_accuracy": 0.03461538461538462,
+    "category_accuracy": 0.03461538461538462,
+    "avg_dice_similarity": 0,
+    "avg_game_score": 47.21,
+    "per_category_accuracy": {
+        "Ones": 0.03,
+        "Twos": 0.04,
+        "Threes": 0.03,
+        "Fours": 0.02,
+        "Fives": 0.02,
+        "Sixes": 0.03,
+        "Three of a Kind": 0.0,
+        "Four of a Kind": 0.03,
+        "Full House": 0.03,
+        "Small Straight": 0.02,
+        "Large Straight": 0.01,
+        "Yahtzee": 0.01,
+        "Chance": 0.18
+    }
+}

@@ -9,13 +9,17 @@ from collections import namedtuple
 Transition = namedtuple('Transition', ['state', 'action', 'reward', 'next_state', 'done'])
 
 class YahtzeeActorCritic(nn.Module):
-    """Actor-Critic network for Yahtzee environment."""
+    """Actor-Critic network for Yahtzee environment with unified action space."""
     
-    def __init__(self, observation_space, n_actions_dice=5, n_actions_category=13, device='cuda' if torch.cuda.is_available() else 'cpu'):
+    def __init__(self, observation_space, device='cuda' if torch.cuda.is_available() else 'cpu'):
         super().__init__()
         
         self.device = device
         input_size = self._get_obs_size(observation_space)
+        
+        # Calculate total action space size
+        # 32 possible dice reroll combinations (2^5) + 13 categories = 45 total actions
+        self.n_actions = 32 + 13  # Combined action space
         
         # Deeper shared layers with layer normalization
         self.shared = nn.Sequential(
@@ -30,20 +34,12 @@ class YahtzeeActorCritic(nn.Module):
             nn.ReLU()
         ).to(device)
         
-        # Separate dice policy layers (output size must be 5 for 5 dice)
-        self.dice_layers = nn.Sequential(
+        # Single action head for combined action space
+        self.action_head = nn.Sequential(
             nn.Linear(128, 64),
             nn.LayerNorm(64),
             nn.ReLU(),
-            nn.Linear(64, 5)  # Fixed to 5 for dice actions
-        ).to(device)
-        
-        # Separate category policy layers (output size must be 13 for categories)
-        self.category_layers = nn.Sequential(
-            nn.Linear(128, 64),
-            nn.LayerNorm(64),
-            nn.ReLU(),
-            nn.Linear(64, 13)  # Fixed to 13 for categories
+            nn.Linear(64, self.n_actions)  # Output logits for all possible actions
         ).to(device)
         
         # Critic head
@@ -102,62 +98,50 @@ class YahtzeeActorCritic(nn.Module):
         # Shared layers
         shared_features = self.shared(x)
         
-        # Actor heads
-        dice_logits = self.dice_layers(shared_features)
-        category_logits = self.category_layers(shared_features)
-        
-        # Critic head
+        # Action logits and value
+        action_logits = self.action_head(shared_features)
         value = self.value(shared_features)
         
-        return dice_logits, category_logits, value
+        return action_logits, value
     
-    def get_dice_action(self, obs, deterministic=False):
-        """Get dice reroll action."""
+    def get_action(self, obs, deterministic=False):
+        """Get action from the network."""
         with torch.no_grad():
-            dice_logits, _, _ = self(obs)
+            action_logits, _ = self(obs)
+            
             if deterministic:
-                action = torch.sigmoid(dice_logits) > 0.5
-            else:
-                # Clamp probabilities to [0, 1] range and handle NaN values
-                probs = torch.clamp(torch.sigmoid(dice_logits), 0.0, 1.0)
-                probs = torch.nan_to_num(probs, nan=0.5, posinf=1.0, neginf=0.0)
-                action = torch.bernoulli(probs)
-        return action.bool(), dice_logits
-    
-    def get_category_action(self, obs, deterministic=False):
-        """Get category action."""
-        with torch.no_grad():
-            _, category_logits, _ = self(obs)
-            if deterministic:
-                action = torch.argmax(category_logits)
+                action = torch.argmax(action_logits)
             else:
                 # Apply softmax and handle NaN values
-                probs = F.softmax(category_logits, dim=0)
-                probs = torch.nan_to_num(probs, nan=1.0/len(probs), posinf=1.0, neginf=0.0)
+                probs = F.softmax(action_logits, dim=-1)
+                probs = torch.nan_to_num(probs, nan=1.0/self.n_actions, posinf=1.0, neginf=0.0)
                 action = torch.multinomial(probs, 1).item()
-        return action, category_logits
+            
+            # Convert action index to dice reroll and category
+            if action < 32:  # Dice reroll action
+                # Convert to binary representation for dice reroll
+                dice_action = torch.tensor(
+                    [(action >> i) & 1 for i in range(5)],
+                    dtype=torch.bool,
+                    device=self.device
+                )
+                category = None
+            else:  # Category action
+                dice_action = None
+                category = action - 32
+            
+            return action, dice_action, category, action_logits
     
-    def evaluate_actions(self, obs, dice_action, category_action):
+    def evaluate_actions(self, obs, actions):
         """Evaluate actions and compute log probabilities and entropy."""
-        dice_logits, category_logits, value = self(obs)
+        action_logits, value = self(obs)
         
-        # Dice action log probabilities
-        dice_probs = torch.sigmoid(dice_logits)
-        dice_probs = torch.clamp(dice_probs, 1e-6, 1.0 - 1e-6)  # Prevent log(0)
-        dice_log_probs = torch.sum(
-            dice_action * torch.log(dice_probs) + 
-            (1 - dice_action) * torch.log(1 - dice_probs)
-        )
+        # Calculate log probabilities using softmax
+        log_probs = F.log_softmax(action_logits, dim=-1)
+        action_log_probs = log_probs.gather(1, actions.unsqueeze(-1))
         
-        # Category action log probabilities
-        category_probs = F.softmax(category_logits, dim=0)
-        category_probs = torch.clamp(category_probs, 1e-6, 1.0)  # Prevent log(0)
-        category_log_probs = torch.log(category_probs[category_action])
+        # Calculate entropy
+        probs = F.softmax(action_logits, dim=-1)
+        entropy = -(probs * log_probs).sum(-1).mean()
         
-        # Entropy for exploration
-        dice_entropy = -(dice_probs * torch.log(dice_probs) + 
-                        (1 - dice_probs) * torch.log(1 - dice_probs)).sum()
-        category_entropy = -(category_probs * torch.log(category_probs)).sum()
-        entropy = dice_entropy + category_entropy
-        
-        return dice_log_probs, category_log_probs, entropy, value 
+        return action_log_probs, entropy, value 
