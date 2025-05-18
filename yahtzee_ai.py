@@ -2,7 +2,8 @@ from game_logic import (
     ScoreSheet, Dice, 
     ONES, TWOS, THREES, FOURS, FIVES, SIXES,
     THREE_OF_A_KIND, FOUR_OF_A_KIND, FULL_HOUSE,
-    SMALL_STRAIGHT, LARGE_STRAIGHT, YAHTZEE, CHANCE
+    SMALL_STRAIGHT, LARGE_STRAIGHT, YAHTZEE, CHANCE,
+    ALL_CATEGORIES
 )
 from collections import Counter
 from itertools import combinations_with_replacement
@@ -10,6 +11,12 @@ import math
 import itertools
 import logging
 import random
+import numpy as np
+import torch
+import torch.optim as optim
+from typing import List, Optional, Tuple
+import torch.nn.functional as F
+from yahtzee_actor_critic import YahtzeeActorCritic, Transition
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -821,4 +828,179 @@ class YahtzeeAI:
         logger.info(f"\nRandom AI choosing category for dice values: {dice_values}")
         logger.info(f"Randomly chose category {chosen_category} with score {score}")
         
-        return chosen_category 
+        return chosen_category
+
+class RLAgent(YahtzeeAI):
+    """Reinforcement Learning agent using Actor-Critic architecture."""
+    
+    def __init__(self, observation_space, device="cpu"):
+        super().__init__(difficulty="rl")
+        self.device = torch.device(device)
+        
+        # Initialize actor-critic network
+        self.ac_net = YahtzeeActorCritic(
+            observation_space=observation_space,
+            n_actions_dice=32,  # 2^5 possible dice reroll combinations
+            n_actions_category=len(ALL_CATEGORIES)
+        ).to(device)
+        
+        # Initialize optimizer
+        self.optimizer = optim.Adam(self.ac_net.parameters(), lr=3e-4)
+        
+        # Training parameters
+        self.gamma = 0.99  # discount factor
+        self.gae_lambda = 0.95  # GAE lambda parameter
+        self.entropy_coef = 0.01  # entropy coefficient
+        self.value_loss_coef = 0.5  # value loss coefficient
+        
+        # Buffer for storing transitions
+        self.transitions: List[Transition] = []
+    
+    def decide_reroll(self, current_dice_values, roll_number) -> List[int]:
+        """Decide which dice to reroll using the actor network."""
+        # Create observation for the network
+        obs = self._get_current_observation()
+        
+        # Get action from the network
+        with torch.no_grad():
+            binary_action, _ = self.ac_net.get_dice_action(
+                obs,
+                deterministic=(roll_number == 2)  # Be deterministic on last roll
+            )
+        
+        # Convert binary action to list of indices
+        return [i for i, reroll in enumerate(binary_action) if reroll]
+    
+    def choose_category(self, dice_values) -> str:
+        """Choose category using the actor network."""
+        # Create observation for the network
+        obs = self._get_current_observation()
+        
+        # Get action from the network
+        with torch.no_grad():
+            category_idx, _ = self.ac_net.get_category_action(
+                obs,
+                deterministic=False  # Could be True for evaluation
+            )
+        
+        return ALL_CATEGORIES[category_idx]
+    
+    def _get_current_observation(self) -> dict:
+        """Create observation dictionary from current game state."""
+        return {
+            'dice': np.array(self.dice.get_values()),
+            'roll_number': self.dice.roll_count,
+            'scoresheet': np.array([
+                self.scoresheet.scores.get(cat, -1) 
+                for cat in ALL_CATEGORIES
+            ]),
+            'upper_bonus': float(self.scoresheet.get_upper_section_bonus() > 0),
+            'yahtzee_bonus': np.array([self.scoresheet.yahtzee_bonus_score // 100]),
+            'opponent_scores': np.array([0]),  # Placeholder for now
+            'relative_rank': 0  # Placeholder for now
+        }
+    
+    def store_transition(
+        self,
+        state: dict,
+        dice_action: torch.Tensor,
+        category_action: int,
+        reward: float,
+        next_state: dict,
+        done: bool
+    ):
+        """Store a transition in the buffer."""
+        self.transitions.append(Transition(
+            state=state,
+            action=(dice_action, category_action),
+            reward=reward,
+            next_state=next_state,
+            done=done
+        ))
+    
+    def compute_gae(
+        self,
+        rewards: List[float],
+        values: torch.Tensor,
+        dones: List[bool]
+    ) -> torch.Tensor:
+        """Compute Generalized Advantage Estimation."""
+        advantages = torch.zeros_like(values)
+        last_advantage = 0
+        
+        for t in reversed(range(len(rewards))):
+            if t == len(rewards) - 1:
+                next_value = 0
+            else:
+                next_value = values[t + 1]
+            
+            delta = rewards[t] + self.gamma * next_value * (1 - dones[t]) - values[t]
+            advantages[t] = delta + self.gamma * self.gae_lambda * (1 - dones[t]) * last_advantage
+            last_advantage = advantages[t]
+        
+        return advantages
+    
+    def update(self) -> Optional[Tuple[float, float, float]]:
+        """Update the actor-critic network using collected transitions."""
+        if not self.transitions:
+            return None
+        
+        # Unzip transitions
+        states, actions, rewards, next_states, dones = zip(*self.transitions)
+        dice_actions, category_actions = zip(*actions)
+        
+        # Convert to tensors
+        dice_actions = torch.stack([torch.tensor(a) for a in dice_actions])
+        category_actions = torch.tensor(category_actions)
+        rewards = torch.tensor(rewards)
+        dones = torch.tensor(dones)
+        
+        # Get values and advantages
+        _, _, values = zip(*[self.ac_net(s) for s in states])
+        values = torch.cat(values)
+        advantages = self.compute_gae(rewards, values, dones)
+        returns = advantages + values
+        
+        # Evaluate actions
+        dice_log_probs, category_log_probs, entropy, new_values = zip(*[
+            self.ac_net.evaluate_actions(s, da, ca)
+            for s, da, ca in zip(states, dice_actions, category_actions)
+        ])
+        
+        # Compute losses
+        dice_log_probs = torch.stack(dice_log_probs)
+        category_log_probs = torch.stack(category_log_probs)
+        new_values = torch.cat(new_values)
+        
+        # Actor loss
+        actor_loss = -(
+            dice_log_probs * advantages.detach() +
+            category_log_probs * advantages.detach()
+        ).mean()
+        
+        # Critic loss
+        value_loss = F.mse_loss(new_values, returns.detach())
+        
+        # Entropy loss (for exploration)
+        entropy_loss = -torch.stack(entropy).mean()
+        
+        # Total loss
+        total_loss = (
+            actor_loss +
+            self.value_loss_coef * value_loss +
+            self.entropy_coef * entropy_loss
+        )
+        
+        # Optimize
+        self.optimizer.zero_grad()
+        total_loss.backward()
+        self.optimizer.step()
+        
+        # Clear transitions
+        self.transitions = []
+        
+        return (
+            actor_loss.item(),
+            value_loss.item(),
+            entropy_loss.item()
+        ) 

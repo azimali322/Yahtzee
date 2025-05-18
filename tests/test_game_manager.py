@@ -16,8 +16,8 @@ class TestGameManager(unittest.TestCase):
         self.game.setup_game()
         
         self.assertEqual(len(self.game.players), 3)
-        self.assertEqual([name for name, _ in self.game.players], ["Alice", "Bob", "Charlie"])
-        self.assertEqual(self.game.current_player_index, 0)
+        self.assertEqual([name for name, _, _ in self.game.players], ["alice", "bob", "charlie"])
+        self.assertEqual(self.game.current_player_idx, 0)
     
     @patch('builtins.input')
     def test_setup_game_invalid_inputs(self, mock_input):
@@ -27,7 +27,7 @@ class TestGameManager(unittest.TestCase):
         self.game.setup_game()
         
         self.assertEqual(len(self.game.players), 2)
-        self.assertEqual([name for name, _ in self.game.players], ["Alice", "Bob"])
+        self.assertEqual([name for name, _, _ in self.game.players], ["alice", "bob"])
     
     @patch('builtins.input')
     def test_setup_game_duplicate_names(self, mock_input):
@@ -37,36 +37,36 @@ class TestGameManager(unittest.TestCase):
         self.game.setup_game()
         
         self.assertEqual(len(self.game.players), 2)
-        self.assertEqual([name for name, _ in self.game.players], ["Alice", "Bob"])
+        self.assertEqual([name for name, _, _ in self.game.players], ["alice", "alice_1"])
     
     def test_next_turn(self):
         # Setup a game with 3 players
         self.game.players = [
-            ("Alice", None),
-            ("Bob", None),
-            ("Charlie", None)
+            ("Alice", self._create_mock_scoresheet(0), None),
+            ("Bob", self._create_mock_scoresheet(0), None),
+            ("Charlie", self._create_mock_scoresheet(0), None)
         ]
         
-        self.assertEqual(self.game.current_player_index, 0)
+        self.assertEqual(self.game.current_player_idx, 0)
         
-        name, _ = self.game.next_turn()
+        name, _, _ = self.game.next_turn()
         self.assertEqual(name, "Bob")
-        self.assertEqual(self.game.current_player_index, 1)
+        self.assertEqual(self.game.current_player_idx, 1)
         
-        name, _ = self.game.next_turn()
+        name, _, _ = self.game.next_turn()
         self.assertEqual(name, "Charlie")
-        self.assertEqual(self.game.current_player_index, 2)
+        self.assertEqual(self.game.current_player_idx, 2)
         
-        name, _ = self.game.next_turn()
+        name, _, _ = self.game.next_turn()
         self.assertEqual(name, "Alice")
-        self.assertEqual(self.game.current_player_index, 0)
+        self.assertEqual(self.game.current_player_idx, 0)
     
     def test_get_rankings_no_ties(self):
         # Setup game with different scores
         self.game.players = [
-            ("Alice", self._create_mock_scoresheet(100)),
-            ("Bob", self._create_mock_scoresheet(200)),
-            ("Charlie", self._create_mock_scoresheet(150))
+            ("Alice", self._create_mock_scoresheet(100), None),
+            ("Bob", self._create_mock_scoresheet(200), None),
+            ("Charlie", self._create_mock_scoresheet(150), None)
         ]
         
         rankings = self.game.get_rankings()
@@ -81,10 +81,10 @@ class TestGameManager(unittest.TestCase):
     def test_get_rankings_with_ties(self):
         # Setup game with tied scores
         self.game.players = [
-            ("Alice", self._create_mock_scoresheet(150)),
-            ("Bob", self._create_mock_scoresheet(200)),
-            ("Charlie", self._create_mock_scoresheet(150)),
-            ("David", self._create_mock_scoresheet(100))
+            ("Alice", self._create_mock_scoresheet(150), None),
+            ("Bob", self._create_mock_scoresheet(200), None),
+            ("Charlie", self._create_mock_scoresheet(150), None),
+            ("David", self._create_mock_scoresheet(100), None)
         ]
         
         rankings = self.game.get_rankings()
@@ -105,16 +105,16 @@ class TestGameManager(unittest.TestCase):
         # - 1 player with 150 points (9th place)
         # - 1 player with 100 points (10th place)
         self.game.players = [
-            ("Alice", self._create_mock_scoresheet(200)),    # Tied 2nd
-            ("Bob", self._create_mock_scoresheet(300)),      # 1st
-            ("Charlie", self._create_mock_scoresheet(200)),  # Tied 2nd
-            ("David", self._create_mock_scoresheet(200)),    # Tied 2nd
-            ("Eve", self._create_mock_scoresheet(200)),      # Tied 2nd
-            ("Frank", self._create_mock_scoresheet(200)),    # Tied 2nd
-            ("Grace", self._create_mock_scoresheet(200)),    # Tied 2nd
-            ("Henry", self._create_mock_scoresheet(200)),    # Tied 2nd
-            ("Ivy", self._create_mock_scoresheet(150)),      # 9th
-            ("Jack", self._create_mock_scoresheet(100))      # 10th
+            ("Alice", self._create_mock_scoresheet(200), None),    # Tied 2nd
+            ("Bob", self._create_mock_scoresheet(300), None),      # 1st
+            ("Charlie", self._create_mock_scoresheet(200), None),  # Tied 2nd
+            ("David", self._create_mock_scoresheet(200), None),    # Tied 2nd
+            ("Eve", self._create_mock_scoresheet(200), None),      # Tied 2nd
+            ("Frank", self._create_mock_scoresheet(200), None),    # Tied 2nd
+            ("Grace", self._create_mock_scoresheet(200), None),    # Tied 2nd
+            ("Henry", self._create_mock_scoresheet(200), None),    # Tied 2nd
+            ("Ivy", self._create_mock_scoresheet(150), None),      # 9th
+            ("Jack", self._create_mock_scoresheet(100), None)      # 10th
         ]
         
         rankings = self.game.get_rankings()
@@ -164,10 +164,10 @@ class TestGameManager(unittest.TestCase):
     def test_display_rankings(self):
         # Setup game with tied scores
         self.game.players = [
-            ("Alice", self._create_mock_scoresheet(150)),
-            ("Bob", self._create_mock_scoresheet(200)),
-            ("Charlie", self._create_mock_scoresheet(150)),
-            ("David", self._create_mock_scoresheet(100))
+            ("Alice", self._create_mock_scoresheet(150), None),
+            ("Bob", self._create_mock_scoresheet(200), None),
+            ("Charlie", self._create_mock_scoresheet(150), None),
+            ("David", self._create_mock_scoresheet(100), None)
         ]
         
         # Capture printed output
@@ -189,13 +189,13 @@ class TestGameManager(unittest.TestCase):
         self.game.setup_game()
         
         self.assertEqual(len(self.game.players), 1)
-        self.assertEqual([name for name, _ in self.game.players], ["Alice"])
-        self.assertEqual(self.game.current_player_index, 0)
+        self.assertEqual([name for name, _, _ in self.game.players], ["alice"])
+        self.assertEqual(self.game.current_player_idx, 0)
     
     def test_single_player_rankings(self):
         """Test rankings display for a single player."""
         self.game.players = [
-            ("Alice", self._create_mock_scoresheet(300))
+            ("Alice", self._create_mock_scoresheet(300), None)
         ]
         
         rankings = self.game.get_rankings()
