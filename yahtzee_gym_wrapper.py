@@ -40,9 +40,10 @@ class YahtzeeAIGymWrapper:
         from game_logic import Dice
         dice = Dice()
         dice.roll_count = observation['roll_number']
-        # Set dice values directly
-        for i, value in enumerate(observation['dice']):
-            dice.dice[i].value = int(value)
+        # Convert numpy array to list and set dice values
+        dice_values = [int(x) for x in observation['dice']]
+        for i, value in enumerate(dice_values):
+            dice.dice[i].value = value
         
         # Update agent's game state
         self.agent.set_game_state(scoresheet, dice)
@@ -51,14 +52,14 @@ class YahtzeeAIGymWrapper:
         dice_to_reroll = np.zeros(5, dtype=np.int8)
         if observation['roll_number'] < 2:
             reroll_indices = self.agent.decide_reroll(
-                observation['dice'],
+                dice_values,  # Pass list instead of numpy array
                 observation['roll_number'] + 1
             )
             if reroll_indices:
                 dice_to_reroll[reroll_indices] = 1
         
         # Get category choice
-        category = self.agent.choose_category(observation['dice'])
+        category = self.agent.choose_category(dice_values)  # Pass list instead of numpy array
         category_index = ALL_CATEGORIES.index(category)
         
         return dice_to_reroll, category_index 
