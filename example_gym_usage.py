@@ -38,6 +38,7 @@ def main():
         "greedy1": YahtzeeAIGymWrapper("greedy1"),
         "greedy2": YahtzeeAIGymWrapper("greedy2"),
         "greedy3": YahtzeeAIGymWrapper("greedy3"),
+        "greedy4": YahtzeeAIGymWrapper("greedy4"),
         "random": YahtzeeAIGymWrapper("random")
     }
     

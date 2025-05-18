@@ -14,7 +14,7 @@ import random
 import numpy as np
 import torch
 import torch.optim as optim
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 import torch.nn.functional as F
 from yahtzee_actor_critic import YahtzeeActorCritic, Transition
 
@@ -49,21 +49,47 @@ class YahtzeeAI:
     
     def __init__(self, difficulty="medium"):
         """Initialize the AI agent with a difficulty level."""
-        self.difficulty = difficulty  # "easy", "medium", "hard", "greedy1", "greedy2", "greedy3", "random"
+        self.difficulty = difficulty  # "easy", "medium", "hard", "greedy1", "greedy2", "greedy3", "greedy4", "random"
         self.scoresheet = None
         self.dice = None
+        
+        # Create Greedy4AI instance if that difficulty is selected
+        if difficulty == "greedy4":
+            self._greedy4_ai = Greedy4AI()
+        else:
+            self._greedy4_ai = None
     
     def set_game_state(self, scoresheet, dice):
         """Set the current game state for the AI to make decisions."""
         self.scoresheet = scoresheet
         self.dice = dice
+        if self._greedy4_ai is not None:
+            self._greedy4_ai.scoresheet = scoresheet
+            self._greedy4_ai.dice = dice
     
     def decide_reroll(self, current_dice_values, roll_number):
         """
         Decide which dice to reroll based on the current dice values and roll number.
         Returns a list of dice indices (0-based) to reroll.
         """
-        if self.difficulty == "easy":
+        if self.difficulty == "rl":
+            # Create observation for the network
+            obs = self._get_current_observation()
+            
+            # Get action from the network
+            with torch.no_grad():
+                binary_action, _ = self.ac_net.get_dice_action(
+                    obs,
+                    deterministic=(roll_number == 2)  # Be deterministic on last roll
+                )
+            
+            # Convert binary action tensor to list of indices
+            binary_action = binary_action.squeeze().cpu().numpy()  # Convert to 1D numpy array
+            return [i for i, reroll in enumerate(binary_action) if reroll]
+        elif self.difficulty == "greedy4":
+            keep_action, _ = self._greedy4_ai.get_action(self.dice)
+            return [i for i, keep in enumerate(keep_action) if not keep]
+        elif self.difficulty == "easy":
             return self._decide_reroll_easy(current_dice_values, roll_number)
         elif self.difficulty == "hard":
             return self._decide_reroll_hard(current_dice_values, roll_number)
@@ -80,15 +106,30 @@ class YahtzeeAI:
     
     def choose_category(self, dice_values):
         """
-        Choose the best category to score based on current dice values.
-        Returns the chosen category name.
+        Choose a category to score based on the current dice values.
+        Returns the chosen category name or None if no category is available.
         """
-        if self.difficulty in ["greedy1", "greedy2", "greedy3"]:
-            return self._choose_category_greedy(dice_values)
+        if self.difficulty == "rl":
+            # Create observation for the network
+            obs = self._get_current_observation()
+            
+            # Get action from the network
+            with torch.no_grad():
+                category_idx, _ = self.ac_net.get_category_action(
+                    obs,
+                    deterministic=False  # Could be True for evaluation
+                )
+            
+            return ALL_CATEGORIES[category_idx]
+        elif self.difficulty == "greedy4":
+            _, target_category = self._greedy4_ai.get_action(self.dice)
+            return target_category
         elif self.difficulty == "easy":
             return self._choose_category_easy(dice_values)
         elif self.difficulty == "hard":
             return self._choose_category_hard(dice_values)
+        elif self.difficulty in ["greedy1", "greedy2", "greedy3"]:
+            return self._choose_category_greedy(dice_values)
         elif self.difficulty == "random":
             return self._choose_category_random(dice_values)
         else:  # medium difficulty
@@ -844,17 +885,51 @@ class RLAgent(YahtzeeAI):
             n_actions_category=len(ALL_CATEGORIES)
         ).to(device)
         
-        # Initialize optimizer
-        self.optimizer = optim.Adam(self.ac_net.parameters(), lr=3e-4)
+        # Initialize optimizer with base learning rate
+        self.base_lr = 1e-3
+        self.optimizer = optim.Adam(self.ac_net.parameters(), lr=self.base_lr)
         
-        # Training parameters
+        # Training parameters with initial values
         self.gamma = 0.99  # discount factor
-        self.gae_lambda = 0.95  # GAE lambda parameter
-        self.entropy_coef = 0.01  # entropy coefficient
+        self.gae_lambda = 0.2  # Initial GAE lambda parameter (will be increased over time)
+        self.entropy_coef = 1e-3  # Initial entropy coefficient (will be decayed)
         self.value_loss_coef = 0.5  # value loss coefficient
+        
+        # Hyperparameter scheduling parameters
+        self.lambda_transition_steps = 60_000  # Steps to transition lambda from 0.2 to 0.8
+        self.entropy_transition_steps = 80_000  # Steps for entropy coefficient decay
+        self.lr_decay_steps = 60_000  # Steps for learning rate decay
+        self.lr_decay_rate = 0.2  # Learning rate decay rate
         
         # Buffer for storing transitions
         self.transitions: List[Transition] = []
+        
+        # Step counter for scheduling
+        self.total_steps = 0
+    
+    def update_hyperparameters(self):
+        """Update hyperparameters based on current step count."""
+        # Update GAE lambda using polynomial schedule (linear in this case, power=1)
+        self.gae_lambda = 0.2 + (0.8 - 0.2) * min(1.0, self.total_steps / self.lambda_transition_steps)
+        
+        # Update entropy coefficient
+        if self.total_steps < self.entropy_transition_steps:
+            self.entropy_coef = 1e-3 * (0.1 ** (self.total_steps / self.entropy_transition_steps))
+        else:
+            self.entropy_coef = -1e-2
+        
+        # Update learning rate using exponential decay
+        current_lr = self.base_lr * (self.lr_decay_rate ** (self.total_steps / self.lr_decay_steps))
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = current_lr
+        
+        self.total_steps += 1
+        
+        return {
+            'gae_lambda': self.gae_lambda,
+            'entropy_coef': self.entropy_coef,
+            'learning_rate': current_lr
+        }
     
     def decide_reroll(self, current_dice_values, roll_number) -> List[int]:
         """Decide which dice to reroll using the actor network."""
@@ -868,7 +943,8 @@ class RLAgent(YahtzeeAI):
                 deterministic=(roll_number == 2)  # Be deterministic on last roll
             )
         
-        # Convert binary action to list of indices
+        # Convert binary action tensor to list of indices
+        binary_action = binary_action.squeeze().cpu().numpy()  # Convert to 1D numpy array
         return [i for i, reroll in enumerate(binary_action) if reroll]
     
     def choose_category(self, dice_values) -> str:
@@ -945,6 +1021,9 @@ class RLAgent(YahtzeeAI):
         if not self.transitions:
             return None
         
+        # Update hyperparameters
+        current_params = self.update_hyperparameters()
+        
         # Unzip transitions
         states, actions, rewards, next_states, dones = zip(*self.transitions)
         dice_actions, category_actions = zip(*actions)
@@ -955,7 +1034,7 @@ class RLAgent(YahtzeeAI):
         rewards = torch.tensor(rewards)
         dones = torch.tensor(dones)
         
-        # Get values and advantages
+        # Get values and advantages using current GAE lambda
         _, _, values = zip(*[self.ac_net(s) for s in states])
         values = torch.cat(values)
         advantages = self.compute_gae(rewards, values, dones)
@@ -967,7 +1046,7 @@ class RLAgent(YahtzeeAI):
             for s, da, ca in zip(states, dice_actions, category_actions)
         ])
         
-        # Compute losses
+        # Compute losses using current entropy coefficient
         dice_log_probs = torch.stack(dice_log_probs)
         category_log_probs = torch.stack(category_log_probs)
         new_values = torch.cat(new_values)
@@ -981,14 +1060,14 @@ class RLAgent(YahtzeeAI):
         # Critic loss
         value_loss = F.mse_loss(new_values, returns.detach())
         
-        # Entropy loss (for exploration)
-        entropy_loss = -torch.stack(entropy).mean()
+        # Entropy loss (for exploration) with current coefficient
+        entropy_loss = -torch.stack(entropy).mean() * current_params['entropy_coef']
         
         # Total loss
         total_loss = (
             actor_loss +
             self.value_loss_coef * value_loss +
-            self.entropy_coef * entropy_loss
+            entropy_loss
         )
         
         # Optimize
@@ -1003,4 +1082,224 @@ class RLAgent(YahtzeeAI):
             actor_loss.item(),
             value_loss.item(),
             entropy_loss.item()
-        ) 
+        )
+
+class Greedy4AI:
+    """
+    A greedy AI that uses a more human-like approach to decision making.
+    It first decides on the most promising category based on the current roll's potential
+    compared to the category's average score, then optimizes the keep action for that category.
+    """
+    def __init__(self):
+        self.name = "Greedy4"
+        self.difficulty = "greedy4"  # Add difficulty attribute to match benchmark expectations
+        self.scoresheet = None  # Initialize to None, will be set by set_game_state
+        self.dice = None  # Initialize to None, will be set by set_game_state
+        self.category_averages = self._compute_category_averages()
+        self._last_keep_action = None  # Store last keep action for category selection
+        self._last_target_category = None  # Store last target category
+    
+    def set_game_state(self, scoresheet, dice):
+        """Set the current game state for the AI to make decisions."""
+        self.scoresheet = scoresheet
+        self.dice = dice
+        print(f"\nGreedy4 set_game_state with scoresheet: {self.scoresheet.scores}")
+    
+    def decide_reroll(self, current_dice_values, roll_number):
+        """
+        Decide which dice to reroll based on the current dice values and roll number.
+        Returns a list of dice indices (0-based) to reroll.
+        """
+        if roll_number >= 3:  # No more rerolls allowed
+            return []
+            
+        # Update dice values in case they changed
+        self.dice.roll_count = roll_number
+        
+        keep_action, target_category = self.get_action(self.dice)
+        self._last_keep_action = keep_action
+        self._last_target_category = target_category
+        
+        # Convert keep_action (True/False list) to reroll indices
+        reroll_indices = [i for i, keep in enumerate(keep_action) if not keep]
+        print(f"\nGreedy4 decide_reroll: dice={current_dice_values}, roll={roll_number}, reroll={reroll_indices}")
+        return reroll_indices
+    
+    def choose_category(self, dice_values):
+        """
+        Choose the best category to score based on current dice values.
+        Returns the chosen category name.
+        """
+        # If we have a target category from last roll, use it
+        if self._last_target_category is not None:
+            category = self._last_target_category
+            self._last_target_category = None  # Reset for next turn
+            print(f"\nGreedy4 choose_category: dice={dice_values}, using stored category={category}")
+            return category
+            
+        # Otherwise, get a new action
+        _, category = self.get_action(self.dice)
+        print(f"\nGreedy4 choose_category: dice={dice_values}, new category={category}")
+        return category
+    
+    def _compute_category_averages(self) -> Dict[str, float]:
+        """Compute the average score for each category across all possible rolls."""
+        category_sums = {cat: 0.0 for cat in ALL_CATEGORIES}
+        total_rolls = 0
+        
+        # Generate all possible dice combinations
+        for dice in itertools.combinations_with_replacement(range(1, 7), 5):
+            total_rolls += 1
+            # Calculate score for each category
+            for category in ALL_CATEGORIES:
+                score = self._calculate_category_score(category, list(dice))
+                category_sums[category] += score
+        
+        # Calculate averages
+        return {cat: sum_score / total_rolls for cat, sum_score in category_sums.items()}
+    
+    def _calculate_category_score(self, category: str, dice: List[int]) -> int:
+        """Calculate score for a category given a dice roll."""
+        counts = Counter(dice)
+        
+        # Upper section scoring
+        if category == ONES: return counts[1]
+        if category == TWOS: return counts[2] * 2
+        if category == THREES: return counts[3] * 3
+        if category == FOURS: return counts[4] * 4
+        if category == FIVES: return counts[5] * 5
+        if category == SIXES: return counts[6] * 6
+        
+        elif category == THREE_OF_A_KIND:
+            if max(counts.values()) >= 3:
+                return sum(dice)
+            return 0
+            
+        elif category == FOUR_OF_A_KIND:
+            if max(counts.values()) >= 4:
+                return sum(dice)
+            return 0
+            
+        elif category == FULL_HOUSE:
+            if 2 in counts.values() and 3 in counts.values():
+                return 25
+            return 0
+            
+        elif category == SMALL_STRAIGHT:
+            sorted_unique = sorted(set(dice))
+            for i in range(len(sorted_unique) - 3):
+                if sorted_unique[i+3] - sorted_unique[i] == 3:
+                    return 30
+            return 0
+            
+        elif category == LARGE_STRAIGHT:
+            sorted_unique = sorted(set(dice))
+            if len(sorted_unique) >= 5 and sorted_unique[-1] - sorted_unique[0] == 4:
+                return 40
+            return 0
+            
+        elif category == YAHTZEE:
+            if max(counts.values()) == 5:
+                return 50
+            return 0
+            
+        elif category == CHANCE:
+            return sum(dice)
+            
+        return 0
+    
+    def _calculate_expected_score(self, category: str, kept_dice: List[int], num_remaining: int) -> float:
+        """Calculate expected score for a category given kept dice and number of dice to reroll."""
+        if num_remaining == 0:
+            return self._calculate_category_score(category, kept_dice)
+        
+        total_score = 0
+        total_possibilities = 0
+        
+        # Generate all possible outcomes for the remaining dice
+        for remaining in itertools.combinations_with_replacement(range(1, 7), num_remaining):
+            total_possibilities += 1
+            full_dice = kept_dice + list(remaining)
+            score = self._calculate_category_score(category, full_dice)
+            total_score += score
+        
+        return total_score / total_possibilities
+    
+    def _get_best_keep_action(self, dice: List[int], target_category: str) -> List[bool]:
+        """Find the optimal keep action for a specific target category."""
+        best_score = float('-inf')
+        best_action = [True] * 5  # Default to keeping all dice
+        
+        # Try all possible keep combinations
+        for keep_pattern in itertools.product([True, False], repeat=5):
+            kept_dice = [d for d, k in zip(dice, keep_pattern) if k]
+            num_remaining = 5 - len(kept_dice)
+            
+            expected_score = self._calculate_expected_score(target_category, kept_dice, num_remaining)
+            
+            if expected_score > best_score:
+                best_score = expected_score
+                best_action = list(keep_pattern)
+        
+        return best_action
+    
+    def get_action(self, dice: Dice) -> Tuple[List[bool], Optional[str]]:
+        """Get the next action (keep pattern and optional category choice)."""
+        current_values = dice.get_values()
+        available_categories = self.scoresheet.get_available_categories()
+        
+        print(f"\nGreedy4 get_action: dice={current_values}, roll_count={dice.roll_count}")
+        print(f"Available categories: {available_categories}")
+        
+        if not available_categories:
+            print("No available categories!")
+            return [True] * 5, None
+        
+        # Calculate advantage (expected score - average) for each category
+        category_advantages = {}
+        for category in available_categories:
+            # Calculate current score for this category
+            current_score = self.scoresheet.get_potential_score(category, current_values)
+            
+            # If this is the last roll, just use current score
+            if dice.roll_count >= 3:
+                advantage = current_score - self.category_averages[category]
+                category_advantages[category] = advantage
+                print(f"Category {category}: current_score={current_score}, advantage={advantage:.2f}")
+                continue
+            
+            # Otherwise, calculate max expected score across all keep patterns
+            max_expected = float('-inf')
+            best_keep = None
+            
+            # Try all possible keep actions to find maximum expected score
+            for keep_pattern in itertools.product([True, False], repeat=5):
+                kept_dice = [d for d, k in zip(current_values, keep_pattern) if k]
+                num_remaining = 5 - len(kept_dice)
+                
+                expected_score = self._calculate_expected_score(category, kept_dice, num_remaining)
+                if expected_score > max_expected:
+                    max_expected = expected_score
+                    best_keep = keep_pattern
+            
+            advantage = max_expected - self.category_averages[category]
+            category_advantages[category] = advantage
+            print(f"Category {category}: max_expected={max_expected:.2f}, advantage={advantage:.2f}")
+        
+        # Select category with highest advantage
+        target_category = max(category_advantages.items(), key=lambda x: x[1])[0]
+        print(f"Selected target category: {target_category}")
+        
+        # If this is the last roll, we must choose a category
+        if dice.roll_count >= 3:
+            print("Last roll - keeping all dice and choosing category")
+            return [True] * 5, target_category
+        
+        # Otherwise, get the optimal keep action for the target category
+        keep_action = self._get_best_keep_action(current_values, target_category)
+        print(f"Optimal keep action: {keep_action}")
+        return keep_action, None
+    
+    def update_score(self, category: str, score: int) -> None:
+        """Update the agent's scoresheet."""
+        self.scoresheet.scores[category] = score 

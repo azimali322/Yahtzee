@@ -1,0 +1,24 @@
+Yahtzee AI Benchmark Results
+==================================================
+
+Win Rates:
+greedy3 vs rl: 100.0% (200 games)
+rl vs greedy3: 0.0% (200 games)
+
+Score Statistics:
+
+greedy3:
+  Mean Score: 211.2 ± 41.6
+  Range: 114 - 376
+
+rl:
+  Mean Score: 31.9 ± 17.3
+  Range: 0 - 87
+
+Timing Statistics:
+
+greedy3:
+  Mean Turn Time: 17.9 ms ± 8.8 ms
+
+rl:
+  Mean Turn Time: 0.5 ms ± 0.4 ms
