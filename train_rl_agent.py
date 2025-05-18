@@ -78,6 +78,10 @@ class YahtzeeTrainer:
         self.eval_episodes = eval_episodes
         self.checkpoint_frequency = checkpoint_frequency
         self.max_checkpoints = max_checkpoints
+        self.learning_rate = learning_rate  # Store learning rate
+        self.gae_lambda = gae_lambda
+        self.entropy_coef = entropy_coef
+        self.value_loss_coef = value_loss_coef
         
         # Setup experiment name and directories
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
